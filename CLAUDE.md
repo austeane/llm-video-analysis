@@ -6,6 +6,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a video analysis webapp built on TanStack Start with Bun 1.3 as the runtime. The project implements an LLM-backed video analysis pipeline for sports footage (originally designed for Quidditch), forked from the `tanstack-start-bun-hosting` template with production-ready server optimizations.
 
+## LLM Documentation References
+
+When working with this project, Claude Code can reference these comprehensive documentation sources:
+
+- **Bun Runtime Documentation**: https://bun.sh/llms-full.txt
+  - Complete Bun API reference, performance optimizations, and runtime features
+  - Includes TypeScript/JavaScript bundling, testing, and deployment guidance
+
+- **Railway Deployment Documentation**: https://docs.railway.com/api/llms-docs.md
+  - Railway CLI usage, deployment patterns, and configuration
+  - Environment variables, domains, and production deployment strategies
+
+- **TanStack Start Cookbook**: https://raw.githubusercontent.com/jherr/tanstack-start-cookbook/refs/heads/main/TanStack-Start-React-Cookbook.md
+  - Comprehensive patterns and recipes for TanStack Start applications
+  - Server functions, routing, data fetching, and SSR best practices
+
+These documentation sources provide Claude Code with detailed context for framework-specific features, deployment strategies, and runtime optimizations.
+
 ## Essential Commands
 
 ### Development
@@ -146,6 +164,26 @@ DEFAULT_MODEL=gemini-2.0-flash-exp
 5. **Environment Management**: Use `.env.local` for local development (git-ignored)
 
 ## Deployment Considerations
+
+### Railway (Recommended)
+Deploy directly to Railway with automatic Bun support:
+```bash
+# Login to Railway
+railway login
+
+# Initialize project
+railway init -n quidditch-video-analysis
+
+# Deploy to Railway
+railway up
+
+# Generate public domain
+railway domain
+
+# Set environment variables
+railway variables set GOOGLE_API_KEY=your-api-key
+```
+Railway automatically detects Bun via nixpacks.toml and handles the build/deployment process.
 
 ### Cloudflare Pages/Workers
 The build output is compatible with Cloudflare deployment:
