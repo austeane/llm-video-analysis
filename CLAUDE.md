@@ -22,6 +22,11 @@ When working with this project, Claude Code can reference these comprehensive do
   - Comprehensive patterns and recipes for TanStack Start applications
   - Server functions, routing, data fetching, and SSR best practices
 
+- **TanStack Start Migration Tracking**: https://github.com/TanStack/router/discussions/2863#discussioncomment-14052148
+  - Important changes and migration steps during TanStack Start BETA
+  - Breaking changes between versions (especially the Vite migration in v1.121.0)
+  - Configuration updates and renamed exports/components
+
 These documentation sources provide Claude Code with detailed context for framework-specific features, deployment strategies, and runtime optimizations.
 
 ## Essential Commands
