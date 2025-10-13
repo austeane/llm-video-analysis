@@ -1,15 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import {
   Video,
   Sparkles,
-  User,
   LogOut,
   Loader2,
   Menu,
   X,
   Github,
-  Moon,
-  Sun
 } from 'lucide-react'
 import { authClient } from '@/lib/auth-client'
 import { Button } from '@/components/ui/button'
@@ -26,14 +23,6 @@ export function Navigation() {
   const { data: session, isPending } = authClient.useSession()
   const [isSigningOut, setIsSigningOut] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const [darkMode, setDarkMode] = useState(false)
-
-  useEffect(() => {
-    // Initialize dark mode state from DOM/localStorage on client side
-    const isDark = document.documentElement.classList.contains('dark') ||
-      localStorage.getItem('theme') === 'dark'
-    setDarkMode(isDark)
-  }, [])
 
   const user = session?.user
 
@@ -48,31 +37,19 @@ export function Navigation() {
     }
   }
 
-  const toggleDarkMode = () => {
-    const newMode = !darkMode
-    setDarkMode(newMode)
-    if (newMode) {
-      document.documentElement.classList.add('dark')
-      localStorage.setItem('theme', 'dark')
-    } else {
-      document.documentElement.classList.remove('dark')
-      localStorage.setItem('theme', 'light')
-    }
-  }
-
   return (
-    <nav className="sticky top-0 z-50 w-full border-b bg-white/80 backdrop-blur-md dark:bg-gray-950/80 dark:border-gray-800">
+    <nav className="sticky top-0 z-50 w-full border-b bg-white/80 backdrop-blur-md">
       <div className="container mx-auto px-4">
         <div className="flex h-16 items-center justify-between">
           {/* Logo Section */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
-              <Video className="h-8 w-8 text-blue-600 dark:text-blue-400" />
+              <Video className="h-8 w-8 text-blue-600" />
               <div className="hidden sm:block">
-                <h1 className="text-xl font-bold text-gray-900 dark:text-white">
+                <h1 className="text-xl font-bold text-gray-900">
                   Video Analysis
                 </h1>
-                <p className="text-xs text-gray-500 dark:text-gray-400">
+                <p className="text-xs text-gray-500">
                   Powered by Vertex AI
                 </p>
               </div>
@@ -81,20 +58,6 @@ export function Navigation() {
 
           {/* Desktop Navigation */}
           <div className="hidden md:flex items-center gap-4">
-            {/* Theme Toggle */}
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={toggleDarkMode}
-              className="rounded-full"
-            >
-              {darkMode ? (
-                <Sun className="h-5 w-5" />
-              ) : (
-                <Moon className="h-5 w-5" />
-              )}
-            </Button>
-
             {/* GitHub Link */}
             <Button
               variant="ghost"
@@ -122,16 +85,16 @@ export function Navigation() {
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
-                    className="flex items-center gap-2 hover:bg-gray-100 dark:hover:bg-gray-800"
+                    className="flex items-center gap-2 hover:bg-gray-100"
                   >
                     <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white">
                       {user.name?.[0]?.toUpperCase() || user.email?.[0]?.toUpperCase() || 'U'}
                     </div>
                     <div className="text-left hidden lg:block">
-                      <p className="text-sm font-medium text-gray-900 dark:text-white">
+                      <p className="text-sm font-medium text-gray-900">
                         {user.name || 'User'}
                       </p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                      <p className="text-xs text-gray-500">
                         {user.email}
                       </p>
                     </div>
@@ -157,7 +120,7 @@ export function Navigation() {
                   <DropdownMenuItem
                     onClick={handleSignOut}
                     disabled={isSigningOut}
-                    className="text-red-600 dark:text-red-400 focus:text-red-600 dark:focus:text-red-400"
+                    className="text-red-600 focus:text-red-600"
                   >
                     {isSigningOut ? (
                       <>
@@ -219,13 +182,13 @@ export function Navigation() {
         {/* Mobile Menu */}
         {mobileMenuOpen && (
           <div className="md:hidden border-t py-4">
-            {user ? (
+           {user ? (
               <div className="space-y-3">
-                <div className="px-2 py-3 border-b dark:border-gray-800">
-                  <p className="text-sm font-medium text-gray-900 dark:text-white">
+                <div className="px-2 py-3 border-b">
+                  <p className="text-sm font-medium text-gray-900">
                     {user.name || 'User'}
                   </p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                  <p className="text-xs text-gray-500">
                     {user.email}
                   </p>
                   <div className="mt-2 space-y-1 text-xs text-gray-500">
@@ -235,7 +198,7 @@ export function Navigation() {
                 </div>
                 <Button
                   variant="ghost"
-                  className="w-full justify-start text-red-600 dark:text-red-400"
+                  className="w-full justify-start text-red-600"
                   onClick={handleSignOut}
                   disabled={isSigningOut}
                 >
@@ -279,25 +242,7 @@ export function Navigation() {
                 </Button>
               </div>
             )}
-            <div className="mt-4 pt-4 border-t dark:border-gray-800 flex items-center justify-between px-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={toggleDarkMode}
-                className="flex items-center gap-2"
-              >
-                {darkMode ? (
-                  <>
-                    <Sun className="h-4 w-4" />
-                    Light Mode
-                  </>
-                ) : (
-                  <>
-                    <Moon className="h-4 w-4" />
-                    Dark Mode
-                  </>
-                )}
-              </Button>
+            <div className="mt-4 pt-4 border-t flex items-center justify-end px-2">
               <Button
                 variant="ghost"
                 size="sm"

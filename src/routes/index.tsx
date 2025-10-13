@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useForm } from '@tanstack/react-form'
 import { createFileRoute } from '@tanstack/react-router'
 import { zodValidator } from '@tanstack/zod-form-adapter'
@@ -56,14 +56,6 @@ function VideoAnalysisPage() {
     isPending: sessionPending,
   } = authClient.useSession()
   const activeUser = session?.user ?? null
-
-  // Initialize dark mode based on localStorage
-  useEffect(() => {
-    const theme = localStorage.getItem('theme')
-    if (theme === 'dark' || (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-      document.documentElement.classList.add('dark')
-    }
-  }, [])
 
   const form = useForm({
     defaultValues: {
@@ -126,23 +118,23 @@ function VideoAnalysisPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100 dark:from-gray-950 dark:via-gray-900 dark:to-gray-950">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-100">
       <Navigation />
 
       {/* Hero Section */}
       <div className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50 dark:from-blue-950/20 dark:via-purple-950/20 dark:to-pink-950/20" />
+        <div className="absolute inset-0 bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50" />
         <div className="relative container mx-auto px-4 py-16 text-center">
           <div className="flex justify-center mb-6">
             <div className="relative">
               <div className="absolute inset-0 animate-pulse bg-gradient-to-r from-blue-400 to-purple-600 blur-xl opacity-50" />
-              <Video className="relative h-16 w-16 text-blue-600 dark:text-blue-400" />
+              <Video className="relative h-16 w-16 text-blue-600" />
             </div>
           </div>
-          <h1 className="text-5xl font-bold bg-gradient-to-r from-gray-900 to-gray-700 dark:from-white dark:to-gray-300 bg-clip-text text-transparent mb-4">
+          <h1 className="text-5xl font-bold bg-gradient-to-r from-gray-900 to-gray-700 bg-clip-text text-transparent mb-4">
             AI-Powered Video Analysis
           </h1>
-          <p className="text-xl text-gray-600 dark:text-gray-400 max-w-2xl mx-auto mb-8">
+          <p className="text-xl text-gray-600 max-w-2xl mx-auto mb-8">
             Transform any YouTube video into actionable insights using Google's most advanced AI models
           </p>
 
@@ -166,8 +158,8 @@ function VideoAnalysisPage() {
 
       <div className="container mx-auto px-4 py-8 max-w-5xl">
         {/* Main Analysis Card */}
-        <Card className="shadow-xl border-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm mb-8">
-          <CardHeader className="border-b dark:border-gray-800">
+        <Card className="shadow-xl border-0 bg-white/90 backdrop-blur-sm mb-8">
+          <CardHeader className="border-b">
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle className="text-2xl">Analyze Video</CardTitle>
@@ -177,8 +169,8 @@ function VideoAnalysisPage() {
               </div>
               {activeUser && (
                 <div className="text-right">
-                  <p className="text-sm text-gray-500 dark:text-gray-400">Daily Budget</p>
-                  <p className="text-lg font-semibold text-green-600 dark:text-green-400">$3.00</p>
+                  <p className="text-sm text-gray-500">Daily Budget</p>
+                  <p className="text-lg font-semibold text-green-600">$3.00</p>
                 </div>
               )}
             </div>
@@ -292,14 +284,14 @@ function VideoAnalysisPage() {
               </Button>
 
               {!activeUser && (
-                <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 p-4">
+                <div className="rounded-lg bg-amber-50 border border-amber-200 p-4">
                   <div className="flex items-start gap-3">
-                    <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5" />
+                    <AlertCircle className="h-5 w-5 text-amber-600 mt-0.5" />
                     <div className="flex-1">
-                      <p className="text-sm text-amber-800 dark:text-amber-200 font-medium">
+                      <p className="text-sm text-amber-800 font-medium">
                         Sign in required
                       </p>
-                      <p className="text-sm text-amber-700 dark:text-amber-300 mt-1">
+                      <p className="text-sm text-amber-700 mt-1">
                         Create a free account to start analyzing videos
                       </p>
                     </div>
@@ -312,8 +304,8 @@ function VideoAnalysisPage() {
 
         {/* Results Display */}
         {result && (
-          <Card className="shadow-xl border-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <CardHeader className="border-b dark:border-gray-800">
+          <Card className="shadow-xl border-0 bg-white/90 backdrop-blur-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <CardHeader className="border-b">
               <div className="flex items-start justify-between">
                 <div className="flex-1">
                   <CardTitle className="text-2xl flex items-center gap-2">
@@ -352,20 +344,20 @@ function VideoAnalysisPage() {
 
             <CardContent className="pt-6">
               {result.error ? (
-                <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/50 p-4">
-                  <p className="text-red-700 dark:text-red-300">
+                <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                  <p className="text-red-700">
                     {result.error}
                   </p>
                 </div>
               ) : (
                 <div className="space-y-6">
                   {/* Summary Section */}
-                  <div className="rounded-lg bg-gradient-to-r from-blue-50 to-purple-50 dark:from-blue-950/30 dark:to-purple-950/30 p-6">
+                  <div className="rounded-lg bg-gradient-to-r from-blue-50 to-purple-50 p-6">
                     <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
-                      <Sparkles className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                      <Sparkles className="h-5 w-5 text-blue-600" />
                       Summary
                     </h3>
-                    <p className="text-gray-700 dark:text-gray-300 leading-relaxed whitespace-pre-wrap">
+                    <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">
                       {result.summary}
                     </p>
                   </div>
@@ -380,22 +372,22 @@ function VideoAnalysisPage() {
                         {result.sections.map((section, index) => (
                           <div
                             key={index}
-                            className="rounded-lg border border-gray-200 dark:border-gray-700 overflow-hidden transition-all duration-200 hover:shadow-md"
+                            className="rounded-lg border border-gray-200 overflow-hidden transition-all duration-200 hover:shadow-md"
                           >
                             <button
                               onClick={() => toggleSection(index)}
-                              className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
+                              className="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-gray-50 transition-colors"
                             >
                               <div className="flex items-center gap-3 flex-1">
                                 <div className="h-8 w-8 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 text-white flex items-center justify-center text-sm font-semibold">
                                   {index + 1}
                                 </div>
                                 <div className="flex-1">
-                                  <h4 className="font-medium text-gray-900 dark:text-white">
+                                  <h4 className="font-medium text-gray-900">
                                     {section.title}
                                   </h4>
                                   {section.timestamp !== undefined && (
-                                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                                    <span className="text-xs text-gray-500">
                                       {formatTimestamp(section.timestamp)}
                                     </span>
                                   )}
@@ -408,8 +400,8 @@ function VideoAnalysisPage() {
                               )}
                             </button>
                             {expandedSections.has(index) && (
-                              <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/30">
-                                <p className="text-sm text-gray-600 dark:text-gray-300 whitespace-pre-wrap">
+                              <div className="px-4 py-3 border-t border-gray-200 bg-gray-50/50">
+                                <p className="text-sm text-gray-600 whitespace-pre-wrap">
                                   {section.content}
                                 </p>
                               </div>
@@ -423,11 +415,11 @@ function VideoAnalysisPage() {
                   {/* Raw Analysis */}
                   {result.rawAnalysis && (
                     <details className="group">
-                      <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 flex items-center gap-2">
+                      <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700 flex items-center gap-2">
                         <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
                         View Raw Analysis
                       </summary>
-                      <pre className="mt-4 p-4 bg-gray-100 dark:bg-gray-900 rounded-lg text-xs overflow-x-auto font-mono">
+                      <pre className="mt-4 p-4 bg-gray-100 rounded-lg text-xs overflow-x-auto font-mono">
                         {result.rawAnalysis}
                       </pre>
                     </details>
@@ -437,7 +429,7 @@ function VideoAnalysisPage() {
             </CardContent>
 
             {!result.error && (
-              <CardFooter className="border-t dark:border-gray-800 text-xs text-gray-500 dark:text-gray-400">
+              <CardFooter className="border-t text-xs text-gray-500">
                 <div className="flex items-center gap-4">
                   <span>
                     Analyzed on {new Date(result.metadata.analysisTimestamp).toLocaleString()}
@@ -548,15 +540,15 @@ function AuthCard() {
   }
 
   return (
-    <Card className="shadow-xl border-0 bg-white/90 dark:bg-gray-900/90 backdrop-blur-sm max-w-md mx-auto">
-      <CardHeader className="text-center border-b dark:border-gray-800">
+    <Card className="shadow-xl border-0 bg-white/90 backdrop-blur-sm max-w-md mx-auto">
+      <CardHeader className="text-center border-b">
         <CardTitle className="text-2xl">Get Started</CardTitle>
         <CardDescription>
           Create an account to start analyzing videos
         </CardDescription>
       </CardHeader>
       <CardContent className="pt-6">
-        <div className="flex gap-2 mb-6 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg">
+        <div className="flex gap-2 mb-6 bg-gray-100 p-1 rounded-lg">
           <Button
             type="button"
             variant={mode === 'signIn' ? 'default' : 'ghost'}
@@ -587,7 +579,7 @@ function AuthCard() {
           <div className="space-y-2">
             <label
               htmlFor="auth-email"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              className="block text-sm font-medium text-gray-700"
             >
               Email
             </label>
@@ -612,7 +604,7 @@ function AuthCard() {
             <div className="space-y-2">
               <label
                 htmlFor="auth-name"
-                className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+                className="block text-sm font-medium text-gray-700"
               >
                 Name
               </label>
@@ -636,7 +628,7 @@ function AuthCard() {
           <div className="space-y-2">
             <label
               htmlFor="auth-password"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              className="block text-sm font-medium text-gray-700"
             >
               Password
             </label>
@@ -677,14 +669,14 @@ function AuthCard() {
         </form>
 
         {(error || message) && (
-          <div className="mt-4 rounded-lg border border-gray-200 dark:border-gray-800 p-3 text-sm">
+          <div className="mt-4 rounded-lg border border-gray-200 p-3 text-sm">
             {error ? (
-              <div className="flex items-start gap-2 text-red-600 dark:text-red-400">
+              <div className="flex items-start gap-2 text-red-600">
                 <AlertCircle className="mt-0.5 h-4 w-4" />
                 <span>{error}</span>
               </div>
             ) : (
-              <div className="flex items-start gap-2 text-green-600 dark:text-green-400">
+              <div className="flex items-start gap-2 text-green-600">
                 <CheckCircle className="mt-0.5 h-4 w-4" />
                 <span>{message}</span>
               </div>

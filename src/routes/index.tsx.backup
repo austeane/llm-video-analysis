@@ -109,14 +109,14 @@ function VideoAnalysisPage() {
             </CardHeader>
             <CardContent className="space-y-6">
               {error ? (
-                <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950 p-4">
+                <div className="rounded-lg border border-red-200 bg-red-50 p-4">
                   <div className="flex items-start gap-3">
-                    <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5" />
+                    <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
                     <div>
-                      <h3 className="font-semibold text-red-900 dark:text-red-100">
+                      <h3 className="font-semibold text-red-900">
                         Analysis Error
                       </h3>
-                      <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                      <p className="text-sm text-red-700 mt-1">
                         {error}
                       </p>
                     </div>
@@ -126,7 +126,7 @@ function VideoAnalysisPage() {
                 <>
                   <div>
                     <h3 className="text-lg font-semibold mb-2">Summary</h3>
-                    <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
+                    <p className="text-gray-700 leading-relaxed">
                       {result.summary}
                     </p>
                   </div>
@@ -140,10 +140,10 @@ function VideoAnalysisPage() {
                         {sections.map((section, index) => (
                           <div
                             key={index}
-                            className="rounded-lg border border-gray-200 dark:border-gray-800 p-4"
+                            className="rounded-lg border border-gray-200 p-4"
                           >
                             <div className="flex items-start justify-between mb-2">
-                              <h4 className="font-medium text-gray-900 dark:text-white">
+                              <h4 className="font-medium text-gray-900">
                                 {section.title}
                               </h4>
                               {section.timestamp !== undefined && (
@@ -152,7 +152,7 @@ function VideoAnalysisPage() {
                                 </Badge>
                               )}
                             </div>
-                            <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+                            <p className="text-sm text-gray-600 whitespace-pre-wrap">
                               {section.content}
                             </p>
                           </div>
@@ -163,10 +163,10 @@ function VideoAnalysisPage() {
 
                   {rawAnalysis && (
                     <details className="mt-6">
-                      <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                      <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700">
                         View Raw Analysis
                       </summary>
-                      <pre className="mt-2 p-4 bg-gray-100 dark:bg-gray-900 rounded-lg text-xs overflow-x-auto">
+                      <pre className="mt-2 p-4 bg-gray-100 rounded-lg text-xs overflow-x-auto">
                         {rawAnalysis}
                       </pre>
                     </details>
@@ -175,7 +175,7 @@ function VideoAnalysisPage() {
               )}
             </CardContent>
             {!error && (
-              <CardFooter className="text-xs text-gray-500 dark:text-gray-400">
+              <CardFooter className="text-xs text-gray-500">
                 Analyzed on{' '}
                 {new Date(metadata.analysisTimestamp).toLocaleString()}
                 {metadata.videoDuration && (
@@ -192,18 +192,18 @@ function VideoAnalysisPage() {
     : null
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950">
+    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100">
       <div className="container mx-auto px-4 py-12 max-w-4xl">
         {/* Header */}
         <div className="text-center mb-12">
           <div className="flex items-center justify-center gap-3 mb-4">
             <Video className="h-10 w-10 text-blue-600" />
-            <h1 className="text-4xl font-bold text-gray-900 dark:text-white">
+            <h1 className="text-4xl font-bold text-gray-900">
               LLM Video Analysis
             </h1>
             <Sparkles className="h-10 w-10 text-blue-600" />
           </div>
-          <p className="text-lg text-gray-600 dark:text-gray-300">
+          <p className="text-lg text-gray-600">
             Analyze YouTube videos with AI-powered insights using Vertex AI
           </p>
         </div>
@@ -333,7 +333,7 @@ function VideoAnalysisPage() {
                     )}
                   </Button>
                   {!activeUser && (
-                    <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                    <p className="text-xs text-gray-500 text-center">
                       Sign in to run analyses. We won’t process videos until
                       you’re authenticated.
                     </p>
@@ -368,7 +368,7 @@ function LoadingCard() {
     <Card className="mb-8">
       <CardContent className="flex items-center justify-center gap-3 py-10">
         <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-        <span className="text-sm text-gray-600 dark:text-gray-300">
+        <span className="text-sm text-gray-600">
           Loading account session...
         </span>
       </CardContent>
@@ -378,26 +378,26 @@ function LoadingCard() {
 
 function AnonymousNotice({ initialError }: { initialError?: string }) {
   return (
-    <Card className="mb-8 border border-dashed border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/40">
+    <Card className="mb-8 border border-dashed border-blue-200 bg-blue-50/40">
       <CardContent className="py-6">
         <div className="flex items-start gap-3">
           <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5" />
           <div>
-            <h3 className="font-semibold text-gray-900 dark:text-gray-100">
+            <h3 className="font-semibold text-gray-900">
               Preview mode — results require an account
             </h3>
-            <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+            <p className="text-sm text-gray-600 mt-1">
               You must sign in to run analyses. Once signed in, you’ll see your
               $3 daily allowance and the app-wide $10 budget.
             </p>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
+            <p className="text-xs text-gray-500 mt-3">
               Budgets reset at midnight UTC. We pause new analyses once the
               limits are reached.
             </p>
           </div>
         </div>
         {initialError && (
-          <p className="mt-4 text-sm text-red-600 dark:text-red-400">
+          <p className="mt-4 text-sm text-red-600">
             {initialError}
           </p>
         )}
@@ -515,7 +515,7 @@ function AuthCard({ initialError }: { initialError?: string }) {
           <div className="space-y-2">
             <label
               htmlFor="auth-email"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              className="block text-sm font-medium text-gray-700"
             >
               Email
             </label>
@@ -539,7 +539,7 @@ function AuthCard({ initialError }: { initialError?: string }) {
             <div className="space-y-2">
               <label
                 htmlFor="auth-name"
-                className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+                className="block text-sm font-medium text-gray-700"
               >
                 Name
               </label>
@@ -562,7 +562,7 @@ function AuthCard({ initialError }: { initialError?: string }) {
           <div className="space-y-2">
             <label
               htmlFor="auth-password"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              className="block text-sm font-medium text-gray-700"
             >
               Password
             </label>
@@ -598,14 +598,14 @@ function AuthCard({ initialError }: { initialError?: string }) {
         </form>
 
         {(error || message) && (
-          <div className="mt-4 rounded-lg border border-gray-200 dark:border-gray-800 p-3 text-sm">
+          <div className="mt-4 rounded-lg border border-gray-200 p-3 text-sm">
             {error ? (
-              <div className="flex items-start gap-2 text-red-600 dark:text-red-400">
+              <div className="flex items-start gap-2 text-red-600">
                 <AlertCircle className="mt-0.5 h-4 w-4" />
                 <span>{error}</span>
               </div>
             ) : (
-              <div className="text-green-600 dark:text-green-400">
+              <div className="text-green-600">
                 {message}
               </div>
             )}
@@ -632,7 +632,7 @@ function AccountCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <p className="text-sm text-gray-600 dark:text-gray-300">
+          <p className="text-sm text-gray-600">
             {user.email}
           </p>
         </div>
@@ -680,7 +680,7 @@ function SignOutButton() {
         )}
       </Button>
       {error && (
-        <span className="text-xs text-red-600 dark:text-red-400">{error}</span>
+        <span className="text-xs text-red-600">{error}</span>
       )}
     </div>
   )
