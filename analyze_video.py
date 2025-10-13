@@ -321,7 +321,7 @@ Environment Variables:
     # Model configuration
     parser.add_argument(
         "--model",
-        default="gemini-2.0-flash",
+        default="gemini-2.5-pro",
         help="Model name (default: gemini-2.0-flash)"
     )
     parser.add_argument(

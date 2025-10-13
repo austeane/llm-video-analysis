@@ -1,0 +1,24 @@
+# Railway Environment Variables to Set
+# Copy these to your Railway service's Variables tab
+
+# Authentication (Required)
+BETTER_AUTH_SECRET=<generate-a-secure-random-string-here>
+BETTER_AUTH_DATABASE_URL=<paste-postgres-connection-string-from-railway>
+
+# LLM Configuration
+USE_STUB=false
+DEFAULT_MODEL=gemini-2.5-pro
+GOOGLE_API_KEY=<your-google-ai-api-key>
+
+# Optional: Vertex AI (if you want advanced features)
+# GOOGLE_CLOUD_PROJECT=<your-gcp-project>
+# GOOGLE_CLOUD_LOCATION=us-central1
+# ENABLE_CHUNKING=true
+# SEGMENT_DURATION=180
+
+# Server Configuration
+PORT=3000
+
+# Production optimizations
+NODE_ENV=production
+STATIC_PRELOAD_MAX_BYTES=5242880
