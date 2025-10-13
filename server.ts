@@ -4,6 +4,8 @@
  * A high-performance production server for TanStack Start applications that
  * implements intelligent static asset loading with configurable memory management.
  *
+ * Last updated: 2025-10-13 - Fixed deployment and health checks
+ *
  * Features:
  * - Hybrid loading strategy (preload small files, serve large files on-demand)
  * - Configurable file filtering with include/exclude patterns
