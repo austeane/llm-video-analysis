@@ -43,7 +43,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
-export const Route = createFileRoute('/')({
+export const Route = createFileRoute('/index-new')({
   component: VideoAnalysisPage,
 })
 

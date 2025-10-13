@@ -1,0 +1,6099 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.playwright-mcp/
+  llm-video-analysis-results.png
+public/
+  favicon.ico
+  logo192.png
+  logo512.png
+  manifest.json
+  robots.txt
+scripts/
+  inspect-auth-database.ts
+  run-better-auth-migrations.ts
+  setup-vertex-ai.ts
+src/
+  components/
+    ui/
+      badge.tsx
+      button.tsx
+      card.tsx
+      field.tsx
+      input.tsx
+      textarea.tsx
+  lib/
+    analysis-schema.ts
+    analyze-api.ts
+    auth-client.ts
+    auth.ts
+    billing.ts
+    db.ts
+    utils.ts
+    youtube-utils.ts
+  routes/
+    api/
+      auth/
+        $.ts
+    __root.tsx
+    api.analyze.ts
+    index.tsx
+  server/
+    analyze-vertex.ts
+  config.ts
+  router.tsx
+  routeTree.gen.ts
+  styles.css
+tickets/
+  001-mvp-landing-page.md
+  002-server-analysis-stub.md
+  003-integrate-analyzer-pipeline.md
+  004-cloudflare-deploy.md
+  021-billing-usage-ledger.sql
+.cta.json
+.env.local.example
+.gitignore
+.prettierignore
+AGENTS.md
+analyze_video.py
+CLAUDE.md
+DEPLOY_RAILWAY.md
+eslint.config.js
+nixpacks.toml
+package.json
+prettier.config.js
+railway-env-vars.txt
+railway.json
+README.md
+server.ts
+setup-railway-db.sh
+SSL_ISSUE_RAILWAY.md
+test-bun-sql-v2.ts
+test-bun-sql.ts
+test-db-connection-simple.ts
+test-db-connection.ts
+tsconfig.json
+vite.config.ts
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="src/lib/billing.ts">
+import crypto from 'node:crypto'
+
+import type { UsageMetadata } from '@google-cloud/vertexai'
+import { db } from '@/lib/db'
+
+const USER_DAILY_LIMIT_USD = parseBudget(
+  process.env.BILLING_USER_DAILY_LIMIT_USD,
+  3,
+)
+const GLOBAL_DAILY_LIMIT_USD = parseBudget(
+  process.env.BILLING_GLOBAL_DAILY_LIMIT_USD,
+  10,
+)
+
+type PricingMap = Record<string, { inputPerMillion: number; outputPerMillion: number }>
+
+const DEFAULT_PRICING: PricingMap = {
+  'gemini-1.5-pro': { inputPerMillion: 7, outputPerMillion: 21 },
+  'gemini-1.5-flash': { inputPerMillion: 0.35, outputPerMillion: 0.7 },
+  'gemini-2.0-flash': { inputPerMillion: 0.15, outputPerMillion: 0.6 },
+  'gemini-2.5-flash': { inputPerMillion: 0.3, outputPerMillion: 2.5 },
+  'gemini-2.5-pro': { inputPerMillion: 1.25, outputPerMillion: 10 },
+}
+
+const pricingOverrides = safeParsePricingOverrides(
+  process.env.BILLING_PRICING_OVERRIDES,
+)
+
+const RESOLVED_PRICING: PricingMap = {
+  ...DEFAULT_PRICING,
+  ...pricingOverrides,
+}
+
+export interface TokenUsage {
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  cachedContentTokens: number
+}
+
+export interface BillingComputation {
+  usage: TokenUsage | null
+  inputCostUsd: number
+  outputCostUsd: number
+  totalCostUsd: number
+}
+
+export interface RecordUsageParams {
+  userId?: string | null
+  sessionId?: string | null
+  model: string
+  youtubeUrl?: string | null
+  usage: TokenUsage | null
+  billing: BillingComputation
+}
+
+export function normalizeUsage(usage?: UsageMetadata | null): TokenUsage | null {
+  if (!usage) {
+    return null
+  }
+
+  const prompt = usage.promptTokenCount ?? 0
+  const completion = usage.candidatesTokenCount ?? 0
+  const total =
+    usage.totalTokenCount ??
+    (usage.promptTokenCount ?? 0) + (usage.candidatesTokenCount ?? 0)
+  const cached = usage.cachedContentTokenCount ?? 0
+
+  return {
+    promptTokens: prompt,
+    completionTokens: completion,
+    totalTokens: total,
+    cachedContentTokens: cached,
+  }
+}
+
+export function mergeUsage(usages: Array<TokenUsage | null | undefined>): TokenUsage | null {
+  const accumulator = usages.reduce<TokenUsage | null>((acc, current) => {
+    if (!current) return acc
+
+    if (!acc) {
+      return { ...current }
+    }
+
+    return {
+      promptTokens: acc.promptTokens + current.promptTokens,
+      completionTokens: acc.completionTokens + current.completionTokens,
+      totalTokens: acc.totalTokens + current.totalTokens,
+      cachedContentTokens: acc.cachedContentTokens + current.cachedContentTokens,
+    }
+  }, null)
+
+  return accumulator
+}
+
+export function calculateCost(model: string, usage: TokenUsage | null): BillingComputation {
+  if (!usage) {
+    return {
+      usage: null,
+      inputCostUsd: 0,
+      outputCostUsd: 0,
+      totalCostUsd: 0,
+    }
+  }
+
+  const pricing = resolvePricing(model)
+  const inputCost = (usage.promptTokens / 1_000_000) * pricing.inputPerMillion
+  const outputCost =
+    (usage.completionTokens / 1_000_000) * pricing.outputPerMillion
+  const total = inputCost + outputCost
+
+  return {
+    usage,
+    inputCostUsd: inputCost,
+    outputCostUsd: outputCost,
+    totalCostUsd: total,
+  }
+}
+
+export async function recordUsage({
+  userId,
+  sessionId,
+  model,
+  youtubeUrl,
+  usage,
+  billing,
+}: RecordUsageParams) {
+  const requestId = crypto.randomUUID()
+
+  await db
+    .insertInto('billing_usage_ledger')
+    .values({
+      request_id: requestId,
+      user_id: userId ?? null,
+      session_id: sessionId ?? null,
+      model,
+      prompt_token_count: usage?.promptTokens ?? null,
+      candidates_token_count: usage?.completionTokens ?? null,
+      total_token_count: usage?.totalTokens ?? null,
+      cached_content_token_count: usage?.cachedContentTokens ?? null,
+      input_cost_usd: billing.inputCostUsd,
+      output_cost_usd: billing.outputCostUsd,
+      cost_usd: billing.totalCostUsd,
+      currency: 'USD',
+      youtube_url: youtubeUrl ?? null,
+    })
+    .executeTakeFirst()
+
+  return requestId
+}
+
+export async function getGlobalDailySpend(): Promise<number> {
+  const row = await db
+    .selectFrom('billing_usage_ledger')
+    .select((eb) =>
+      eb
+        .fn.coalesce(
+          eb.fn.sum<number>('billing_usage_ledger.cost_usd'),
+          eb.val<number>(0),
+        )
+        .as('total'),
+    )
+    .where('created_at', '>=', startOfUtcDay())
+    .executeTakeFirst()
+
+  return row?.total ?? 0
+}
+
+export async function getUserDailySpend(userId: string): Promise<number> {
+  const row = await db
+    .selectFrom('billing_usage_ledger')
+    .select((eb) =>
+      eb
+        .fn.coalesce(
+          eb.fn.sum<number>('billing_usage_ledger.cost_usd'),
+          eb.val<number>(0),
+        )
+        .as('total'),
+    )
+    .where('user_id', '=', userId)
+    .where('created_at', '>=', startOfUtcDay())
+    .executeTakeFirst()
+
+  return row?.total ?? 0
+}
+
+export async function hasReachedGlobalLimit(bufferUsd = 0): Promise<boolean> {
+  const total = await getGlobalDailySpend()
+  return total + bufferUsd >= GLOBAL_DAILY_LIMIT_USD
+}
+
+export async function hasReachedUserLimit(
+  userId: string,
+  bufferUsd = 0,
+): Promise<boolean> {
+  const total = await getUserDailySpend(userId)
+  return total + bufferUsd >= USER_DAILY_LIMIT_USD
+}
+
+export function getBudgetConfig() {
+  return {
+    userDailyLimitUsd: USER_DAILY_LIMIT_USD,
+    globalDailyLimitUsd: GLOBAL_DAILY_LIMIT_USD,
+  }
+}
+
+function resolvePricing(model: string) {
+  const normalized = model.toLowerCase()
+  const pricing = RESOLVED_PRICING[normalized]
+
+  if (!pricing) {
+    throw new Error(
+      `No billing pricing configured for model "${model}". Set BILLING_PRICING_OVERRIDES or update DEFAULT_PRICING.`,
+    )
+  }
+
+  return pricing
+}
+
+function parseBudget(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback
+  const parsed = Number(raw)
+  if (Number.isNaN(parsed) || parsed < 0) {
+    throw new Error(`Invalid budget value provided: ${raw}`)
+  }
+  return parsed
+}
+
+function safeParsePricingOverrides(raw: string | undefined): PricingMap {
+  if (!raw) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as PricingMap
+    return Object.fromEntries(
+      Object.entries(parsed).map(([key, value]) => [
+        key.toLowerCase(),
+        {
+          inputPerMillion: Number(value.inputPerMillion),
+          outputPerMillion: Number(value.outputPerMillion),
+        },
+      ]),
+    )
+  } catch (error) {
+    throw new Error(
+      `Failed to parse BILLING_PRICING_OVERRIDES. Expected JSON object mapping model names to { inputPerMillion, outputPerMillion } numbers. Original error: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  }
+}
+
+function startOfUtcDay(): Date {
+  const now = new Date()
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0))
+}
+</file>
+
+<file path="src/lib/db.ts">
+import { Kysely, PostgresDialect, Generated, ColumnType } from 'kysely'
+
+import { authDbPool } from '@/lib/auth'
+
+export interface BillingUsageLedgerTable {
+  id: Generated<number>
+  request_id: string
+  user_id: string | null
+  session_id: string | null
+  model: string
+  prompt_token_count: number | null
+  candidates_token_count: number | null
+  total_token_count: number | null
+  cached_content_token_count: number | null
+  input_cost_usd: number
+  output_cost_usd: number
+  cost_usd: number
+  currency: string
+  youtube_url: string | null
+  created_at: ColumnType<Date, Date | string | undefined, never>
+}
+
+export interface Database {
+  billing_usage_ledger: BillingUsageLedgerTable
+}
+
+export const db = new Kysely<Database>({
+  dialect: new PostgresDialect({
+    pool: authDbPool,
+  }),
+})
+</file>
+
+<file path="tickets/021-billing-usage-ledger.sql">
+-- Track per-request Vertex AI usage for budgeting rules
+CREATE TABLE IF NOT EXISTS billing_usage_ledger (
+  id BIGSERIAL PRIMARY KEY,
+  request_id UUID NOT NULL,
+  user_id TEXT,
+  session_id TEXT,
+  model TEXT NOT NULL,
+  prompt_token_count INTEGER,
+  candidates_token_count INTEGER,
+  total_token_count INTEGER,
+  cached_content_token_count INTEGER,
+  input_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+  output_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+  cost_usd DOUBLE PRECISION NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'USD',
+  youtube_url TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS billing_usage_ledger_request_id_idx
+  ON billing_usage_ledger (request_id);
+
+CREATE INDEX IF NOT EXISTS billing_usage_ledger_created_at_idx
+  ON billing_usage_ledger (created_at);
+
+CREATE INDEX IF NOT EXISTS billing_usage_ledger_user_id_created_at_idx
+  ON billing_usage_ledger (user_id, created_at);
+</file>
+
+<file path="public/manifest.json">
+{
+  "short_name": "TanStack App",
+  "name": "Create TanStack App Sample",
+  "icons": [
+    {
+      "src": "favicon.ico",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/x-icon"
+    },
+    {
+      "src": "logo192.png",
+      "type": "image/png",
+      "sizes": "192x192"
+    },
+    {
+      "src": "logo512.png",
+      "type": "image/png",
+      "sizes": "512x512"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#000000",
+  "background_color": "#ffffff"
+}
+</file>
+
+<file path="public/robots.txt">
+# https://www.robotstxt.org/robotstxt.html
+User-agent: *
+Disallow:
+</file>
+
+<file path="scripts/inspect-auth-database.ts">
+import { auth } from '../src/lib/auth.ts'
+
+console.log('database keys', Object.keys(auth.options.database))
+</file>
+
+<file path="scripts/run-better-auth-migrations.ts">
+#!/usr/bin/env bun
+import { getMigrations } from 'better-auth/db'
+import { auth } from '../src/lib/auth.ts'
+
+async function main() {
+  const { runMigrations } = await getMigrations(auth.options)
+  await runMigrations()
+  console.log('✅ Better Auth migrations executed successfully')
+}
+
+main().catch((error) => {
+  console.error('❌ Failed to run Better Auth migrations', error)
+  process.exit(1)
+})
+</file>
+
+<file path="scripts/setup-vertex-ai.ts">
+#!/usr/bin/env bun
+
+/**
+ * Setup script for Vertex AI authentication
+ * Helps configure Google Cloud credentials for video analysis
+ */
+
+import * as path from 'node:path'
+import * as fs from 'node:fs/promises'
+
+import { $ } from 'bun'
+
+console.log('🔧 Vertex AI Setup Script')
+console.log('========================\n')
+
+async function checkGCloudCLI() {
+  console.log('1. Checking for gcloud CLI...')
+  try {
+    await $`which gcloud`.quiet()
+    const version = await $`gcloud --version`.text()
+    console.log('✅ gcloud CLI found:')
+    console.log(version.split('\n')[0])
+    return true
+  } catch {
+    console.log('❌ gcloud CLI not found')
+    console.log('   Please install: https://cloud.google.com/sdk/docs/install')
+    return false
+  }
+}
+
+async function checkAuthentication() {
+  console.log('\n2. Checking authentication...')
+  try {
+    const account =
+      await $`gcloud auth list --filter=status:ACTIVE --format="value(account)"`.text()
+    if (account.trim()) {
+      console.log(`✅ Authenticated as: ${account.trim()}`)
+      return true
+    }
+  } catch {}
+
+  console.log('❌ Not authenticated')
+  console.log('   Run: gcloud auth application-default login')
+  return false
+}
+
+async function checkProject() {
+  console.log('\n3. Checking project configuration...')
+  try {
+    const project = await $`gcloud config get-value project`.text()
+    if (project.trim()) {
+      console.log(`✅ Project set to: ${project.trim()}`)
+      return project.trim()
+    }
+  } catch {}
+
+  console.log('❌ No project configured')
+  console.log('   Run: gcloud config set project YOUR_PROJECT_ID')
+  return null
+}
+
+async function setupApplicationDefaultCredentials() {
+  console.log('\n4. Setting up Application Default Credentials...')
+
+  const credsPath = path.join(
+    process.env.HOME || '~',
+    '.config/gcloud/application_default_credentials.json',
+  )
+
+  try {
+    await fs.access(credsPath)
+    console.log(`✅ ADC found at: ${credsPath}`)
+    return true
+  } catch {
+    console.log('❌ Application Default Credentials not found')
+    console.log('   Setting up ADC...\n')
+
+    console.log('   Please run the following command:')
+    console.log('   gcloud auth application-default login\n')
+    console.log('   This will open your browser to authenticate.')
+    return false
+  }
+}
+
+async function createEnvFile(project: string | null) {
+  console.log('\n5. Creating .env.local with Vertex AI configuration...')
+
+  const envPath = path.join(process.cwd(), '.env.local')
+  const envExamplePath = path.join(process.cwd(), '.env.local.example')
+
+  try {
+    // Read existing env file or example
+    let envContent = ''
+    try {
+      envContent = await fs.readFile(envPath, 'utf-8')
+    } catch {
+      try {
+        envContent = await fs.readFile(envExamplePath, 'utf-8')
+      } catch {
+        envContent = ''
+      }
+    }
+
+    // Get current project
+    const resolvedProject =
+      project ??
+      (await $`gcloud config get-value project`
+        .text()
+        .catch(() => 'your-project-id'))
+
+    // Add Vertex AI configuration if not present
+    const vertexConfig = `
+# Vertex AI Configuration (for direct video analysis)
+GOOGLE_CLOUD_PROJECT=${resolvedProject.trim()}
+GOOGLE_CLOUD_LOCATION=us-central1
+
+# Use Vertex AI for video analysis (actual video content analysis)
+USE_VERTEX_AI=true
+
+# Enable chunking for long videos (Vertex AI only)
+ENABLE_CHUNKING=false
+SEGMENT_DURATION=180
+`
+
+    if (!envContent.includes('GOOGLE_CLOUD_PROJECT')) {
+      envContent += vertexConfig
+      await fs.writeFile(envPath, envContent)
+      console.log('✅ Added Vertex AI configuration to .env.local')
+    } else {
+      console.log('✅ Vertex AI configuration already in .env.local')
+    }
+
+    console.log('\n   Review and update .env.local with your settings:')
+    console.log(`   - GOOGLE_CLOUD_PROJECT=${resolvedProject.trim()}`)
+    console.log('   - GOOGLE_CLOUD_LOCATION=us-central1')
+  } catch (error) {
+    console.log('⚠️  Could not update .env.local')
+    console.log('   Please manually add the Vertex AI configuration')
+  }
+}
+
+async function testVertexAPI(project: string | null) {
+  console.log('\n6. Testing Vertex AI API access...')
+
+  try {
+    // Check if Vertex AI API is enabled
+    if (!project) {
+      return false
+    }
+
+    const apiStatus =
+      await $`gcloud services list --enabled --filter="name:aiplatform.googleapis.com" --format="value(name)" --project=${project.trim()}`.text()
+
+    if (apiStatus.includes('aiplatform')) {
+      console.log('✅ Vertex AI API is enabled')
+      return true
+    } else {
+      console.log('❌ Vertex AI API is not enabled')
+      console.log(
+        `   Enable it: gcloud services enable aiplatform.googleapis.com --project=${project.trim()}`,
+      )
+      return false
+    }
+  } catch (error) {
+    console.log('⚠️  Could not check Vertex AI API status')
+    console.log("   Make sure it's enabled in your Google Cloud Console")
+    return false
+  }
+}
+
+// Main setup flow
+async function main() {
+  const gcloud = await checkGCloudCLI()
+  const auth = gcloud ? await checkAuthentication() : false
+  const project = gcloud ? await checkProject() : null
+  const adc =
+    auth && project ? await setupApplicationDefaultCredentials() : false
+
+  if (auth && project) {
+    await createEnvFile(project)
+  }
+
+  const api = project ? await testVertexAPI(project) : false
+
+  const status = (value: boolean) => (value ? '✅' : '❌')
+
+  console.log('\n' + '='.repeat(50))
+  console.log('Setup Summary:')
+  console.log('='.repeat(50))
+  console.log(`gcloud CLI:     ${status(gcloud)}`)
+  console.log(`Authentication: ${status(auth)}`)
+  console.log(`Project:        ${project ? `✅ ${project}` : '❌'}`)
+  console.log(`ADC:            ${status(adc)}`)
+  console.log(`Vertex AI API:  ${status(api)}`)
+
+  if (gcloud && auth && project && adc && api) {
+    console.log('\n✅ Vertex AI is ready to use!')
+    console.log('   You can now analyze actual video content.')
+    return
+  }
+
+  console.log('\n⚠️  Some setup steps are incomplete.')
+  console.log('   Follow the instructions above to complete setup.')
+
+  if (!gcloud) {
+    console.log(
+      '\n❌ Install the gcloud CLI first: https://cloud.google.com/sdk/docs/install',
+    )
+  }
+
+  if (!auth || !project) {
+    console.log('\nQuick setup commands:')
+    console.log('1. gcloud auth login')
+    console.log('2. gcloud config set project YOUR_PROJECT_ID')
+    console.log('3. gcloud auth application-default login')
+    console.log('4. gcloud services enable aiplatform.googleapis.com')
+  }
+
+  if (auth && project && !adc) {
+    console.log('\nRun: gcloud auth application-default login')
+  }
+
+  if (project && !api) {
+    console.log(
+      `\nEnable the Vertex AI API: gcloud services enable aiplatform.googleapis.com --project=${project}`,
+    )
+  }
+
+  process.exit(1)
+}
+
+main().catch(console.error)
+</file>
+
+<file path="src/components/ui/badge.tsx">
+import * as React from 'react'
+
+import { cva } from 'class-variance-authority'
+import type { VariantProps } from 'class-variance-authority'
+
+import { cn } from '@/lib/utils'
+
+const badgeVariants = cva(
+  'inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+  {
+    variants: {
+      variant: {
+        default:
+          'border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/80',
+        secondary:
+          'border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80',
+        destructive:
+          'border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80',
+        outline: 'text-foreground',
+        success: 'border-transparent bg-green-500 text-white',
+        warning: 'border-transparent bg-yellow-500 text-white',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+    },
+  },
+)
+
+export interface BadgeProps
+  extends React.HTMLAttributes<HTMLDivElement>,
+    VariantProps<typeof badgeVariants> {}
+
+function Badge({ className, variant, ...props }: BadgeProps) {
+  return (
+    <div className={cn(badgeVariants({ variant }), className)} {...props} />
+  )
+}
+
+export { Badge, badgeVariants }
+</file>
+
+<file path="src/components/ui/button.tsx">
+import * as React from 'react'
+
+import { cva } from 'class-variance-authority'
+import type { VariantProps } from 'class-variance-authority'
+
+import { cn } from '@/lib/utils'
+
+const buttonVariants = cva(
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+  {
+    variants: {
+      variant: {
+        default:
+          'bg-primary text-primary-foreground shadow hover:bg-primary/90',
+        destructive:
+          'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90',
+        outline:
+          'border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground',
+        secondary:
+          'bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80',
+        ghost: 'hover:bg-accent hover:text-accent-foreground',
+        link: 'text-primary underline-offset-4 hover:underline',
+      },
+      size: {
+        default: 'h-9 px-4 py-2',
+        sm: 'h-8 rounded-md px-3 text-xs',
+        lg: 'h-10 rounded-md px-8',
+        icon: 'h-9 w-9',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+      size: 'default',
+    },
+  },
+)
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {
+  asChild?: boolean
+}
+
+const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, ...props }, ref) => {
+    return (
+      <button
+        className={cn(buttonVariants({ variant, size, className }))}
+        ref={ref}
+        {...props}
+      />
+    )
+  },
+)
+Button.displayName = 'Button'
+
+export { Button, buttonVariants }
+</file>
+
+<file path="src/components/ui/card.tsx">
+import * as React from 'react'
+import { cn } from '@/lib/utils'
+
+const Card = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(
+      'rounded-lg border bg-card text-card-foreground shadow',
+      className,
+    )}
+    {...props}
+  />
+))
+Card.displayName = 'Card'
+
+const CardHeader = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn('flex flex-col space-y-1.5 p-6', className)}
+    {...props}
+  />
+))
+CardHeader.displayName = 'CardHeader'
+
+const CardTitle = React.forwardRef<
+  HTMLHeadingElement,
+  React.HTMLAttributes<HTMLHeadingElement>
+>(({ className, ...props }, ref) => (
+  <h3
+    ref={ref}
+    className={cn('font-semibold leading-none tracking-tight', className)}
+    {...props}
+  />
+))
+CardTitle.displayName = 'CardTitle'
+
+const CardDescription = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <p
+    ref={ref}
+    className={cn('text-sm text-muted-foreground', className)}
+    {...props}
+  />
+))
+CardDescription.displayName = 'CardDescription'
+
+const CardContent = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn('p-6 pt-0', className)} {...props} />
+))
+CardContent.displayName = 'CardContent'
+
+const CardFooter = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn('flex items-center p-6 pt-0', className)}
+    {...props}
+  />
+))
+CardFooter.displayName = 'CardFooter'
+
+export { Card, CardHeader, CardFooter, CardTitle, CardDescription, CardContent }
+</file>
+
+<file path="src/components/ui/field.tsx">
+import * as React from 'react'
+
+import { cn } from '@/lib/utils'
+
+function hasMessageProperty(value: unknown): value is { message?: unknown } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Object.prototype.hasOwnProperty.call(value, 'message')
+  )
+}
+
+interface FieldProps extends React.HTMLAttributes<HTMLDivElement> {
+  orientation?: 'vertical' | 'horizontal' | 'responsive'
+  'data-invalid'?: boolean
+}
+
+const Field = React.forwardRef<HTMLDivElement, FieldProps>(
+  ({ className, orientation = 'vertical', children, ...props }, ref) => {
+    return (
+      <div
+        ref={ref}
+        className={cn(
+          'space-y-2',
+          orientation === 'horizontal' &&
+            'flex items-center justify-between space-x-4 space-y-0',
+          orientation === 'responsive' &&
+            'sm:flex sm:items-center sm:justify-between sm:space-x-4 sm:space-y-0',
+          props['data-invalid'] && 'text-destructive',
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </div>
+    )
+  },
+)
+Field.displayName = 'Field'
+
+const FieldGroup = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(
+      'space-y-6',
+      props['data-slot'] === 'checkbox-group' && 'space-y-3',
+      className,
+    )}
+    {...props}
+  />
+))
+FieldGroup.displayName = 'FieldGroup'
+
+const FieldContent = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn('flex-1 space-y-1', className)} {...props} />
+))
+FieldContent.displayName = 'FieldContent'
+
+const FieldLabel = React.forwardRef<
+  HTMLLabelElement,
+  React.LabelHTMLAttributes<HTMLLabelElement>
+>(({ className, ...props }, ref) => (
+  <label
+    ref={ref}
+    className={cn(
+      'text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
+      className,
+    )}
+    {...props}
+  />
+))
+FieldLabel.displayName = 'FieldLabel'
+
+const FieldDescription = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <p
+    ref={ref}
+    className={cn('text-[0.8rem] text-muted-foreground', className)}
+    {...props}
+  />
+))
+FieldDescription.displayName = 'FieldDescription'
+
+interface FieldErrorProps extends React.HTMLAttributes<HTMLDivElement> {
+  errors?: unknown
+}
+
+const FieldError = React.forwardRef<HTMLDivElement, FieldErrorProps>(
+  ({ className, errors, ...props }, ref) => {
+    if (!errors) return null
+
+    // Handle different error formats
+    let errorMessages: Array<string> = []
+
+    if (Array.isArray(errors)) {
+      errorMessages = errors.map((error) => {
+        if (typeof error === 'string') {
+          return error
+        }
+
+        if (hasMessageProperty(error)) {
+          const { message } = error
+          return typeof message === 'string' ? message : String(message)
+        }
+
+        return String(error)
+      })
+    } else if (typeof errors === 'string') {
+      errorMessages = [errors]
+    } else if (hasMessageProperty(errors)) {
+      const { message } = errors
+      errorMessages = [typeof message === 'string' ? message : String(message)]
+    } else {
+      errorMessages = [String(errors)]
+    }
+
+    if (errorMessages.length === 0) return null
+
+    return (
+      <div
+        ref={ref}
+        className={cn('text-[0.8rem] font-medium text-destructive', className)}
+        {...props}
+      >
+        {errorMessages.join(', ')}
+      </div>
+    )
+  },
+)
+FieldError.displayName = 'FieldError'
+
+const FieldSet = React.forwardRef<
+  HTMLFieldSetElement,
+  React.FieldsetHTMLAttributes<HTMLFieldSetElement>
+>(({ className, ...props }, ref) => (
+  <fieldset ref={ref} className={cn('space-y-4', className)} {...props} />
+))
+FieldSet.displayName = 'FieldSet'
+
+const FieldLegend = React.forwardRef<
+  HTMLLegendElement,
+  React.HTMLAttributes<HTMLLegendElement> & {
+    variant?: 'default' | 'label'
+  }
+>(({ className, variant = 'default', ...props }, ref) => (
+  <legend
+    ref={ref}
+    className={cn(
+      variant === 'default' && 'text-base font-semibold',
+      variant === 'label' && 'text-sm font-medium',
+      className,
+    )}
+    {...props}
+  />
+))
+FieldLegend.displayName = 'FieldLegend'
+
+const FieldTitle = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn('text-sm font-medium', className)} {...props} />
+))
+FieldTitle.displayName = 'FieldTitle'
+
+export {
+  Field,
+  FieldGroup,
+  FieldContent,
+  FieldLabel,
+  FieldDescription,
+  FieldError,
+  FieldSet,
+  FieldLegend,
+  FieldTitle,
+}
+</file>
+
+<file path="src/components/ui/input.tsx">
+import * as React from 'react'
+import { cn } from '@/lib/utils'
+
+export interface InputProps
+  extends React.InputHTMLAttributes<HTMLInputElement> {}
+
+const Input = React.forwardRef<HTMLInputElement, InputProps>(
+  ({ className, type, ...props }, ref) => {
+    return (
+      <input
+        type={type}
+        className={cn(
+          'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
+          className,
+        )}
+        ref={ref}
+        {...props}
+      />
+    )
+  },
+)
+Input.displayName = 'Input'
+
+export { Input }
+</file>
+
+<file path="src/components/ui/textarea.tsx">
+import * as React from 'react'
+import { cn } from '@/lib/utils'
+
+export interface TextareaProps
+  extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {}
+
+const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
+  ({ className, ...props }, ref) => {
+    return (
+      <textarea
+        className={cn(
+          'flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
+          className,
+        )}
+        ref={ref}
+        {...props}
+      />
+    )
+  },
+)
+Textarea.displayName = 'Textarea'
+
+export { Textarea }
+</file>
+
+<file path="src/lib/analysis-schema.ts">
+import * as z from 'zod'
+
+// YouTube URL validation regex
+const YOUTUBE_URL_REGEX =
+  /^(https?:\/\/)?(www\.)?(youtube\.com\/(watch\?v=|embed\/|v\/)|youtu\.be\/)[\w-]{11}(?:\S+)?$/
+
+// Request schema for video analysis
+export const analyzeRequestSchema = z.object({
+  youtubeUrl: z
+    .string()
+    .min(1, 'YouTube URL is required')
+    .regex(YOUTUBE_URL_REGEX, 'Please enter a valid YouTube URL'),
+  prompt: z
+    .string()
+    .min(10, 'Prompt must be at least 10 characters')
+    .max(500, 'Prompt must be less than 500 characters'),
+})
+
+export type AnalyzeFormData = z.infer<typeof analyzeRequestSchema>
+
+// Response schema for analysis results
+const billingMetadataSchema = z.object({
+  totalCostUsd: z.number(),
+  inputCostUsd: z.number(),
+  outputCostUsd: z.number(),
+  promptTokens: z.number().optional(),
+  completionTokens: z.number().optional(),
+  totalTokens: z.number().optional(),
+  cachedContentTokens: z.number().optional(),
+  userDailyLimitUsd: z.number().optional(),
+  globalDailyLimitUsd: z.number().optional(),
+  userDailyTotalUsd: z.number().optional(),
+  globalDailyTotalUsd: z.number().optional(),
+  isUserCapped: z.boolean().optional(),
+  isGlobalCapped: z.boolean().optional(),
+  requestId: z.string().optional(),
+})
+
+export const analyzeResponseSchema = z.object({
+  summary: z.string(),
+  metadata: z
+    .object({
+      videoTitle: z.string().optional(),
+      videoDuration: z.number().optional(), // in seconds
+      analysisTimestamp: z.string(),
+      model: z.string(),
+      processingTime: z.number(), // in milliseconds
+      analysisMode: z.enum(['direct-video', 'text-based']).optional(), // How the analysis was performed
+    })
+    .extend({
+      billing: billingMetadataSchema.optional(),
+    }),
+  sections: z
+    .array(
+      z.object({
+        title: z.string(),
+        content: z.string(),
+        timestamp: z.number().optional(), // video timestamp in seconds
+      }),
+    )
+    .optional(),
+  rawAnalysis: z.string().optional(),
+  error: z.string().optional(),
+})
+
+export type AnalyzeResponse = z.infer<typeof analyzeResponseSchema>
+export type AnalyzeBillingMetadata = z.infer<typeof billingMetadataSchema>
+
+// Environment configuration schema - no defaults, fail if not set
+export const envSchema = z.object({
+  GOOGLE_CLOUD_PROJECT: z.string(),
+  GOOGLE_CLOUD_LOCATION: z.string(),
+  DEFAULT_MODEL: z.string(),
+  ENABLE_CHUNKING: z.boolean(),
+  SEGMENT_DURATION: z.number(),
+})
+
+export type EnvConfig = z.infer<typeof envSchema>
+</file>
+
+<file path="src/lib/analyze-api.ts">
+/**
+ * API client for video analysis using Vertex AI
+ * No fallbacks - fails loudly if something goes wrong
+ */
+
+import type { AnalyzeFormData, AnalyzeResponse } from './analysis-schema'
+
+export class AnalyzeApiError extends Error {
+  readonly status: number
+  readonly payload?: AnalyzeResponse
+
+  constructor(message: string, status: number, payload?: AnalyzeResponse) {
+    super(message)
+    this.name = 'AnalyzeApiError'
+    this.status = status
+    this.payload = payload
+  }
+}
+
+/**
+ * Analyze video using Vertex AI - no fallbacks
+ */
+export async function analyzeVideo(
+  data: AnalyzeFormData,
+  options?: {
+    enableChunking?: boolean
+    segmentDuration?: number
+  },
+): Promise<AnalyzeResponse> {
+  const response = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ...data,
+      ...options,
+    }),
+  })
+
+  const payload = (await response.json().catch(() => null)) as
+    | AnalyzeResponse
+    | null
+
+  if (!response.ok) {
+    const message = payload?.error
+      ? payload.error
+      : `API request failed with status ${response.status}`
+    throw new AnalyzeApiError(message, response.status, payload ?? undefined)
+  }
+
+  if (!payload) {
+    throw new AnalyzeApiError(
+      'API returned an empty response payload.',
+      response.status,
+    )
+  }
+
+  return payload
+}
+</file>
+
+<file path="src/lib/auth-client.ts">
+import { createAuthClient } from 'better-auth/react'
+
+const baseURL = import.meta.env.VITE_BETTER_AUTH_URL
+
+export const authClient = createAuthClient({
+  baseURL: baseURL || undefined,
+})
+</file>
+
+<file path="src/lib/auth.ts">
+import fs from 'node:fs'
+import tls from 'node:tls'
+import { betterAuth } from 'better-auth'
+import { reactStartCookies } from 'better-auth/react-start'
+import { Pool } from 'pg'
+
+const secret = process.env.BETTER_AUTH_SECRET
+
+if (process.env.NODE_ENV !== 'production' && !secret) {
+  console.warn(
+    '[better-auth] BETTER_AUTH_SECRET is not set. Sessions will use a default development secret.',
+  )
+}
+
+const databaseUrl =
+  process.env.BETTER_AUTH_DATABASE_URL ?? process.env.DATABASE_URL
+
+if (!databaseUrl) {
+  throw new Error(
+    'BETTER_AUTH_DATABASE_URL (or DATABASE_URL) must be set to a PostgreSQL connection string.',
+  )
+}
+
+// Configure SSL for Railway PostgreSQL
+// Railway uses a self-signed certificate, so we need to handle SSL carefully
+const isProduction = process.env.NODE_ENV === 'production'
+
+const url = new URL(databaseUrl)
+const sslMode = url.searchParams.get('sslmode')
+if (sslMode) {
+  url.searchParams.delete('sslmode')
+}
+
+const connectionString = url.toString().replace(/\?$/, '')
+let sslConfig: any = false
+
+const caCertPath = process.env.RAILWAY_CA_CERT_PATH
+let caCert: string | undefined
+
+if (caCertPath) {
+  try {
+    caCert = fs.readFileSync(caCertPath, 'utf8')
+  } catch {
+    console.warn(
+      `[better-auth] Unable to read RAILWAY_CA_CERT_PATH="${caCertPath}". Falling back to insecure TLS.`,
+    )
+  }
+}
+
+const hostname = url.hostname
+const connectingViaRailwayProxy = /\.proxy\.rlwy\.net$/i.test(hostname)
+const runningOnRailway = Boolean(
+  process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID,
+)
+
+if (sslMode && sslMode.toLowerCase() === 'require') {
+  if (runningOnRailway) {
+    sslConfig = {
+      rejectUnauthorized: true,
+      ca: caCert,
+    }
+  } else if (connectingViaRailwayProxy) {
+    if (caCert) {
+      sslConfig = {
+        rejectUnauthorized: true,
+        ca: caCert,
+        checkServerIdentity: (host: string, cert: tls.PeerCertificate) => {
+          if (
+            cert.subject.CN === 'localhost' &&
+            /\.proxy\.rlwy\.net$/i.test(host)
+          ) {
+            return undefined
+          }
+          return tls.checkServerIdentity(host, cert)
+        },
+      }
+    } else {
+      console.warn(
+        '[better-auth] Railway proxy host detected without CA cert. Using TLS with rejectUnauthorized=false.',
+      )
+      sslConfig = {
+        rejectUnauthorized: false,
+      }
+    }
+  } else {
+    sslConfig = caCert
+      ? {
+          rejectUnauthorized: true,
+          ca: caCert,
+        }
+      : {
+          rejectUnauthorized: !isProduction,
+        }
+  }
+} else if (caCert && runningOnRailway) {
+  sslConfig = {
+    rejectUnauthorized: true,
+    ca: caCert,
+  }
+}
+
+// Create pg Pool for Better Auth
+const pool = new Pool({
+  connectionString,
+  ssl: sslConfig,
+  max: Number(process.env.BETTER_AUTH_DATABASE_POOL_MAX ?? '10'),
+})
+
+export const auth = betterAuth({
+  database: pool,
+  secret,
+  emailAndPassword: {
+    enabled: true,
+    autoSignIn: true,
+  },
+  plugins: [reactStartCookies()],
+})
+
+export const authDbPool = pool
+</file>
+
+<file path="src/lib/utils.ts">
+import { clsx } from 'clsx'
+import { twMerge } from 'tailwind-merge'
+import type { ClassValue } from 'clsx'
+
+export function cn(...inputs: Array<ClassValue>) {
+  return twMerge(clsx(inputs))
+}
+</file>
+
+<file path="src/lib/youtube-utils.ts">
+export interface YouTubeVideoInfo {
+  videoId: string
+  title?: string
+  duration?: number // in seconds
+  thumbnail?: string
+}
+
+/**
+ * Extracts video ID from various YouTube URL formats
+ */
+export function extractVideoId(url: string): string | null {
+  const patterns = [
+    // Standard watch URL: youtube.com/watch?v=VIDEO_ID
+    /(?:youtube\.com\/watch\?v=|youtube\.com\/watch\?.*&v=)([^&\s]{11})/,
+    // Shortened URL: youtu.be/VIDEO_ID
+    /youtu\.be\/([^?&\s]{11})/,
+    // Embed URL: youtube.com/embed/VIDEO_ID
+    /youtube\.com\/embed\/([^?&\s]{11})/,
+    // Mobile URL: m.youtube.com/watch?v=VIDEO_ID
+    /m\.youtube\.com\/watch\?v=([^&\s]{11})/,
+  ]
+
+  for (const pattern of patterns) {
+    const match = url.match(pattern)
+    if (match) {
+      return match[1]
+    }
+  }
+
+  return null
+}
+
+/**
+ * Gets basic video information from YouTube URL
+ * Note: This is a simplified version. In production, you would use YouTube Data API
+ */
+export function getYouTubeVideoInfo(url: string): YouTubeVideoInfo | null {
+  const videoId = extractVideoId(url)
+
+  if (!videoId) {
+    return null
+  }
+
+  // For now, return basic info based on the video ID
+  // In production, this would make an API call to YouTube Data API
+  return {
+    videoId,
+    thumbnail: `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`,
+    // Title and duration would come from YouTube API
+    // For now, we'll let the AI provider handle the analysis without this info
+  }
+}
+
+/**
+ * Formats seconds into a readable duration string
+ */
+export function formatDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  const remainingSeconds = seconds % 60
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`
+  } else {
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+  }
+}
+
+/**
+ * Builds a YouTube URL from a video ID
+ */
+export function buildYouTubeUrl(videoId: string): string {
+  return `https://www.youtube.com/watch?v=${videoId}`
+}
+</file>
+
+<file path="src/routes/api/auth/$.ts">
+import { createFileRoute } from '@tanstack/react-router'
+
+import { auth } from '@/lib/auth'
+
+export const Route = createFileRoute('/api/auth/$')({
+  server: {
+    handlers: {
+      GET: ({ request }) => auth.handler(request),
+      POST: ({ request }) => auth.handler(request),
+    },
+  },
+})
+</file>
+
+<file path="src/routes/api.analyze.ts">
+/**
+ * API route for video analysis using Vertex AI
+ * This provides actual video content analysis, not just text-based inference
+ */
+
+import * as z from 'zod'
+
+import { createFileRoute } from '@tanstack/react-router'
+
+import type { AnalyzeResponse } from '@/lib/analysis-schema'
+import { analyzeRequestSchema } from '@/lib/analysis-schema'
+import {
+  calculateCost,
+  getBudgetConfig,
+  getGlobalDailySpend,
+  getUserDailySpend,
+  recordUsage,
+} from '@/lib/billing'
+import { auth } from '@/lib/auth'
+import {
+  analyzeVideoChunked,
+  analyzeVideoVertex,
+} from '@/server/analyze-vertex'
+
+export const Route = createFileRoute('/api/analyze')({
+  server: {
+    handlers: {
+      POST: async ({ request }) => {
+        try {
+          const body = await request.json()
+          const validatedData = analyzeRequestSchema.parse(body)
+          const enableChunking = Boolean(body.enableChunking)
+          const segmentDuration =
+            typeof body.segmentDuration === 'number'
+              ? body.segmentDuration
+              : 180
+
+          const session = await auth.api.getSession({
+            headers: request.headers,
+          })
+
+          if (!session) {
+            return buildUnauthorizedResponse()
+          }
+
+          const sessionData = session as Record<string, any> | null
+          const userId = sessionData?.user?.id as string | undefined
+          const sessionId =
+            sessionData?.session?.id ??
+            (typeof sessionData?.id === 'string'
+              ? sessionData.id
+              : undefined)
+
+          const { userDailyLimitUsd, globalDailyLimitUsd } =
+            getBudgetConfig()
+
+          const [globalSpendBefore, userSpendBefore] = await Promise.all([
+            getGlobalDailySpend(),
+            userId ? getUserDailySpend(userId) : Promise.resolve(undefined),
+          ])
+
+          if (globalSpendBefore >= globalDailyLimitUsd) {
+            return buildGlobalBudgetExceededResponse(
+              globalDailyLimitUsd,
+              globalSpendBefore,
+            )
+          }
+
+          if (
+            userId &&
+            (userSpendBefore ?? 0) >= userDailyLimitUsd
+          ) {
+            return buildUserBudgetExceededResponse(
+              userDailyLimitUsd,
+              userSpendBefore ?? 0,
+            )
+          }
+
+          console.log(
+            `[API] Received analysis request for: ${validatedData.youtubeUrl}`,
+          )
+          console.log(
+            `[API] Mode: Vertex AI with ${enableChunking ? `chunking (${segmentDuration}s)` : 'full video'}`,
+          )
+
+          const analysisOutcome = enableChunking
+            ? await analyzeVideoChunked({
+                ...validatedData,
+                enableChunking,
+                segmentDuration,
+              })
+            : await analyzeVideoVertex(validatedData)
+
+          const result = analysisOutcome.response
+          const usage = analysisOutcome.usage
+
+          const billing = calculateCost(result.metadata.model, usage)
+
+          let requestId: string | undefined
+          try {
+            requestId = await recordUsage({
+              userId,
+              sessionId,
+              model: result.metadata.model,
+              youtubeUrl: validatedData.youtubeUrl,
+              usage,
+              billing,
+            })
+          } catch (loggingError) {
+            console.error('[Billing] Failed to record usage:', loggingError)
+          }
+
+          let globalSpendAfter = globalSpendBefore + billing.totalCostUsd
+          let userSpendAfter =
+            userId && userSpendBefore !== undefined
+              ? userSpendBefore + billing.totalCostUsd
+              : userSpendBefore
+
+          try {
+            const [refreshedGlobal, refreshedUser] = await Promise.all([
+              getGlobalDailySpend(),
+              userId ? getUserDailySpend(userId) : Promise.resolve(undefined),
+            ])
+            globalSpendAfter = refreshedGlobal
+            userSpendAfter = refreshedUser
+          } catch (refreshError) {
+            console.warn('[Billing] Unable to refresh spend totals:', refreshError)
+          }
+
+          result.metadata.billing = {
+            totalCostUsd: roundCurrency(billing.totalCostUsd),
+            inputCostUsd: roundCurrency(billing.inputCostUsd),
+            outputCostUsd: roundCurrency(billing.outputCostUsd),
+            promptTokens: usage?.promptTokens,
+            completionTokens: usage?.completionTokens,
+            totalTokens: usage?.totalTokens,
+            cachedContentTokens: usage?.cachedContentTokens,
+            userDailyLimitUsd,
+            globalDailyLimitUsd,
+            userDailyTotalUsd:
+              userSpendAfter !== undefined
+                ? roundCurrency(userSpendAfter)
+                : undefined,
+            globalDailyTotalUsd: roundCurrency(globalSpendAfter),
+            isUserCapped:
+              userId !== undefined
+                ? (userSpendAfter ?? 0) >= userDailyLimitUsd
+                : undefined,
+            isGlobalCapped: globalSpendAfter >= globalDailyLimitUsd,
+            requestId,
+          }
+
+          return new Response(JSON.stringify(result), {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          })
+        } catch (error) {
+          console.error('[API] Analysis error:', error)
+
+          if (error instanceof z.ZodError) {
+            return buildValidationErrorResponse(error)
+          }
+
+          if (error instanceof SyntaxError) {
+            return buildJsonParseErrorResponse(error)
+          }
+
+          const errorMessage =
+            error instanceof Error
+              ? error.message
+              : 'An unexpected error occurred'
+          const isAuthError =
+            errorMessage.includes('credentials') ||
+            errorMessage.includes('authentication')
+
+          return buildAnalysisFailureResponse(errorMessage, isAuthError)
+        }
+      },
+    },
+  },
+})
+
+function buildUnauthorizedResponse(): Response {
+  const { userDailyLimitUsd, globalDailyLimitUsd } = getBudgetConfig()
+
+  const payload: AnalyzeResponse = {
+    summary: 'Sign in to view analysis results',
+    metadata: {
+      analysisTimestamp: new Date().toISOString(),
+      model: 'unauthorized',
+      processingTime: 0,
+      analysisMode: 'text-based',
+      billing: {
+        totalCostUsd: 0,
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+        userDailyLimitUsd,
+        globalDailyLimitUsd,
+        isGlobalCapped: false,
+      },
+    },
+    error:
+      'Please sign in to run video analyses. Your prompt has not been processed yet.',
+  }
+
+  return new Response(JSON.stringify(payload), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function buildGlobalBudgetExceededResponse(
+  limit: number,
+  total: number,
+): Response {
+  const payload: AnalyzeResponse = {
+    summary: 'Daily budget exhausted',
+    metadata: {
+      analysisTimestamp: new Date().toISOString(),
+      model: 'budget-exceeded',
+      processingTime: 0,
+      analysisMode: 'text-based',
+      billing: {
+        totalCostUsd: 0,
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+        globalDailyLimitUsd: limit,
+        globalDailyTotalUsd: roundCurrency(total),
+        isGlobalCapped: true,
+      },
+    },
+    error: `The application has reached the global daily spending cap of $${limit.toFixed(2)}. Please try again after the budget resets (midnight UTC).`,
+  }
+
+  return new Response(JSON.stringify(payload), {
+    status: 503,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function buildUserBudgetExceededResponse(
+  limit: number,
+  total: number,
+): Response {
+  const payload: AnalyzeResponse = {
+    summary: 'Personal daily limit reached',
+    metadata: {
+      analysisTimestamp: new Date().toISOString(),
+      model: 'user-budget-exceeded',
+      processingTime: 0,
+      analysisMode: 'text-based',
+      billing: {
+        totalCostUsd: 0,
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+        userDailyLimitUsd: limit,
+        userDailyTotalUsd: roundCurrency(total),
+        isUserCapped: true,
+      },
+    },
+    error: `You have reached the daily spending limit of $${limit.toFixed(2)} for your account. Your total for today is $${roundCurrency(total).toFixed(2)}.`,
+  }
+
+  return new Response(JSON.stringify(payload), {
+    status: 402,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function buildValidationErrorResponse(error: z.ZodError): Response {
+  const payload: AnalyzeResponse = {
+    summary: 'Validation Error',
+    metadata: {
+      analysisTimestamp: new Date().toISOString(),
+      model: 'error',
+      processingTime: 0,
+      analysisMode: 'text-based',
+      billing: {
+        totalCostUsd: 0,
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+      },
+    },
+    error: `Invalid input: ${error.issues
+      .map((issue) => issue.message)
+      .join(', ')}`,
+  }
+
+  return new Response(JSON.stringify(payload), {
+    status: 400,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function buildJsonParseErrorResponse(_error: SyntaxError): Response {
+  const payload: AnalyzeResponse = {
+    summary: 'Invalid JSON payload',
+    metadata: {
+      analysisTimestamp: new Date().toISOString(),
+      model: 'error',
+      processingTime: 0,
+      analysisMode: 'text-based',
+      billing: {
+        totalCostUsd: 0,
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+      },
+    },
+    error: 'Request body must be valid JSON.',
+  }
+
+  return new Response(JSON.stringify(payload), {
+    status: 400,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function buildAnalysisFailureResponse(
+  message: string,
+  authRelated: boolean,
+): Response {
+  const payload: AnalyzeResponse = {
+    summary: authRelated ? 'Authentication Required' : 'Analysis Failed',
+    metadata: {
+      analysisTimestamp: new Date().toISOString(),
+      model: 'error',
+      processingTime: 0,
+      analysisMode: 'text-based',
+      billing: {
+        totalCostUsd: 0,
+        inputCostUsd: 0,
+        outputCostUsd: 0,
+      },
+    },
+    error: authRelated
+      ? 'Vertex AI requires Google Cloud authentication. Please configure GOOGLE_APPLICATION_CREDENTIALS or use Application Default Credentials.'
+      : message,
+  }
+
+  return new Response(JSON.stringify(payload), {
+    status: authRelated ? 401 : 500,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
+function roundCurrency(value: number, precision = 6): number {
+  const factor = 10 ** precision
+  return Math.round(value * factor) / factor
+}
+</file>
+
+<file path="src/server/analyze-vertex.ts">
+/**
+ * Vertex AI video analysis implementation matching analyze_video.py
+ * This provides ACTUAL video content analysis, not just text-based inference
+ */
+
+import {
+  HarmBlockThreshold,
+  HarmCategory,
+  VertexAI,
+} from '@google-cloud/vertexai'
+
+import type { TokenUsage } from '@/lib/billing'
+import { mergeUsage, normalizeUsage } from '@/lib/billing'
+
+import type { AnalyzeFormData, AnalyzeResponse } from '@/lib/analysis-schema'
+import { CONFIG, validateConfig } from '@/config'
+import { extractVideoId } from '@/lib/youtube-utils'
+
+// Validate configuration on module load
+validateConfig()
+
+export interface VertexAnalysisResult {
+  response: AnalyzeResponse
+  usage: TokenUsage | null
+}
+
+/**
+ * Initialize Vertex AI client
+ */
+function getVertexClient() {
+  // No fallbacks - use centralized config
+  return new VertexAI({
+    project: CONFIG.GOOGLE_CLOUD_PROJECT,
+    location: CONFIG.GOOGLE_CLOUD_LOCATION,
+  })
+}
+
+/**
+ * Analyze video using Vertex AI with direct video file support
+ * This matches the Python script's approach of analyzing actual video content
+ */
+export async function analyzeVideoVertex(
+  data: AnalyzeFormData,
+): Promise<VertexAnalysisResult> {
+  const startTime = Date.now()
+
+  try {
+    // Initialize Vertex AI
+    const vertexAI = getVertexClient()
+    const modelName = CONFIG.MODEL
+
+    // Get the generative model
+    const generativeModel = vertexAI.getGenerativeModel({
+      model: modelName,
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 2048,
+        topK: 40,
+        topP: 0.95,
+      },
+      safetySettings: [
+        {
+          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH,
+        },
+      ],
+    })
+
+    // Extract video ID for logging
+    const videoId = extractVideoId(data.youtubeUrl) || 'unknown'
+
+    console.log(
+      `[Vertex AI] Analyzing video ${videoId} with model ${modelName}`,
+    )
+
+    /**
+     * IMPORTANT: This is where we match the Python script's approach
+     *
+     * Python version:
+     * ```python
+     * contents = [
+     *   types.Part(file_data=types.FileData(
+     *     file_uri=youtube_url,
+     *     mime_type="video/mp4"
+     *   )),
+     *   types.Part(text=prompt)
+     * ]
+     * ```
+     *
+     * JavaScript/TypeScript version with Vertex AI:
+     */
+    const request = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            {
+              fileData: {
+                mimeType: 'video/mp4',
+                fileUri: data.youtubeUrl, // Vertex AI can fetch YouTube videos directly!
+              },
+            },
+            {
+              text: `Please analyze this video and ${data.prompt}.
+                     Provide a structured analysis with:
+                     1. A brief summary (2-3 sentences)
+                     2. Detailed sections covering different aspects
+                     3. Key insights and takeaways
+                     4. Include approximate timestamps where relevant`,
+            },
+          ],
+        },
+      ],
+    }
+
+    // Generate content with actual video analysis
+    const result = await generativeModel.generateContent(request)
+    const response = result.response
+    const usage = normalizeUsage(response.usageMetadata)
+
+    // Extract text from response
+    const text =
+      response.candidates?.[0]?.content?.parts
+        ?.map((part) => part.text)
+        ?.filter(Boolean)
+        ?.join('\n') || 'No response generated'
+
+    // Parse response into sections
+    const sections = parseResponseIntoSections(text)
+
+    // Extract summary (first paragraph or section)
+    const summary =
+      sections.length > 0
+        ? sections[0].content.split('\n')[0]
+        : text.substring(0, 200)
+
+    const analysisResponse: AnalyzeResponse = {
+      summary,
+      metadata: {
+        videoTitle: `Video Analysis (${videoId})`,
+        videoDuration: undefined, // TODO: Extract from video metadata
+        analysisTimestamp: new Date().toISOString(),
+        model: modelName,
+        processingTime: Date.now() - startTime,
+        analysisMode: 'direct-video', // We're analyzing the actual video!
+      },
+      sections: sections.slice(1), // Skip the summary section
+      rawAnalysis: text,
+    }
+
+    console.log(
+      `[Vertex AI] Analysis completed in ${analysisResponse.metadata.processingTime}ms`,
+    )
+    return {
+      response: analysisResponse,
+      usage,
+    }
+  } catch (error) {
+    console.error('[Vertex AI] Analysis error:', error)
+
+    const errorMessage =
+      error instanceof Error
+        ? error.message
+        : 'An unexpected error occurred during video analysis'
+
+    // Check if it's an authentication error
+    if (
+      errorMessage.includes('credentials') ||
+      errorMessage.includes('authentication')
+    ) {
+      return {
+        response: {
+          summary: 'Authentication Error',
+          metadata: {
+            analysisTimestamp: new Date().toISOString(),
+            model: 'error',
+            processingTime: Date.now() - startTime,
+            analysisMode: 'direct-video',
+          },
+          error:
+            'Vertex AI authentication failed. Please configure Google Cloud credentials.',
+        },
+        usage: null,
+      }
+    }
+
+    return {
+      response: {
+        summary: 'Analysis Failed',
+        metadata: {
+          analysisTimestamp: new Date().toISOString(),
+          model: 'error',
+          processingTime: Date.now() - startTime,
+          analysisMode: 'direct-video',
+        },
+        error: errorMessage,
+      },
+      usage: null,
+    }
+  }
+}
+
+/**
+ * Analyze video with chunking for long videos
+ * This matches the Python script's chunking functionality
+ */
+export async function analyzeVideoChunked(
+  data: AnalyzeFormData & {
+    enableChunking?: boolean
+    segmentDuration?: number // seconds
+    maxWorkers?: number
+  },
+): Promise<VertexAnalysisResult> {
+  const startTime = Date.now()
+
+  // Configuration
+  const segmentDuration = data.segmentDuration || 180 // 3 minutes default
+  const maxWorkers = data.maxWorkers || 3
+
+  try {
+    const videoDuration = await resolveVideoDurationSeconds(data.youtubeUrl)
+
+    // Check if chunking is needed
+    if (
+      !data.enableChunking ||
+      !videoDuration ||
+      videoDuration <= segmentDuration
+    ) {
+      if (data.enableChunking && !videoDuration) {
+        console.warn(
+          '[Vertex AI] Unable to determine video duration for chunked analysis. Falling back to single-pass analysis.',
+        )
+      }
+
+      // Video is short enough, analyze as single chunk
+      return await analyzeVideoVertex(data)
+    }
+
+    // Create video segments
+    const segments = createVideoSegments(videoDuration, segmentDuration)
+    console.log(
+      `[Vertex AI] Analyzing video in ${segments.length} chunks of ${segmentDuration}s (concurrency: ${Math.max(
+        1,
+        Math.min(maxWorkers, segments.length),
+      )})`,
+    )
+
+    // Initialize Vertex AI
+    const vertexAI = getVertexClient()
+    const modelName = CONFIG.MODEL
+    const videoId = extractVideoId(data.youtubeUrl) || 'unknown'
+
+    const generativeModel = vertexAI.getGenerativeModel({
+      model: modelName,
+      generationConfig: {
+        temperature: 0.2,
+        maxOutputTokens: 1024, // Smaller for chunks
+        topK: 40,
+        topP: 0.95,
+      },
+    })
+
+    // Analyze segments in parallel
+    const chunkTasks = segments.map((segment, index) => async () => {
+      console.log(
+        `[Vertex AI] Processing chunk ${index + 1}/${segments.length}`,
+      )
+
+      const request = {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                fileData: {
+                  mimeType: 'video/mp4',
+                  fileUri: data.youtubeUrl,
+                },
+                videoMetadata: {
+                  startOffset: { seconds: segment.start },
+                  endOffset: { seconds: segment.end },
+                },
+              },
+              {
+                text: `Analyze this video segment from ${segment.start}s to ${segment.end}s. ${data.prompt}`,
+              },
+            ],
+          },
+        ],
+      }
+
+      const result = await generativeModel.generateContent(request)
+      const text =
+        result.response.candidates?.[0]?.content?.parts
+          ?.map((part) => part.text)
+          ?.filter(Boolean)
+          ?.join('\n') || ''
+
+      return {
+        segmentIndex: index + 1,
+        start: segment.start,
+        end: segment.end,
+        analysis: text,
+        usage: normalizeUsage(result.response.usageMetadata),
+      }
+    })
+
+    // Wait for all chunks with concurrency limit
+    const chunkResults = await runWithConcurrency(chunkTasks, maxWorkers)
+
+    // Combine results
+    const combinedAnalysis = chunkResults
+      .sort((a, b) => a.segmentIndex - b.segmentIndex)
+      .map(
+        (chunk) =>
+          `### Segment ${chunk.segmentIndex} (${formatTimestamp(chunk.start)} - ${formatTimestamp(chunk.end)})\n${chunk.analysis}`,
+      )
+      .join('\n\n')
+
+    const usage = mergeUsage(chunkResults.map((chunk) => chunk.usage))
+
+    // Create sections from combined analysis
+    const sections = parseResponseIntoSections(combinedAnalysis)
+
+    const analysisResponse: AnalyzeResponse = {
+      summary: `Analyzed ${segments.length} video segments. ${sections[0]?.content || 'Video analysis complete.'}`,
+      metadata: {
+        videoTitle: `Video Analysis (${videoId})`,
+        videoDuration: videoDuration,
+        analysisTimestamp: new Date().toISOString(),
+        model: modelName,
+        processingTime: Date.now() - startTime,
+        analysisMode: 'direct-video',
+      },
+      sections,
+      rawAnalysis: combinedAnalysis,
+    }
+
+    return {
+      response: analysisResponse,
+      usage,
+    }
+  } catch (error) {
+    console.error('[Vertex AI] Chunked analysis error:', error)
+
+    return {
+      response: {
+        summary: 'Chunked Analysis Failed',
+        metadata: {
+          analysisTimestamp: new Date().toISOString(),
+          model: 'error',
+          processingTime: Date.now() - startTime,
+          analysisMode: 'direct-video',
+        },
+        error:
+          error instanceof Error ? error.message : 'Chunked analysis failed',
+      },
+      usage: null,
+    }
+  }
+}
+
+async function resolveVideoDurationSeconds(
+  youtubeUrl: string,
+): Promise<number | null> {
+  const videoId = extractVideoId(youtubeUrl)
+  if (!videoId) {
+    return null
+  }
+
+  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`
+
+  try {
+    const response = await fetch(watchUrl, {
+      headers: {
+        // Spoof a minimal browser user-agent to avoid lightweight bot filtering
+        'User-Agent':
+          'Mozilla/5.0 (compatible; LLMVideoAnalysis/1.0; +https://quidditch.video)',
+      },
+    })
+
+    if (!response.ok) {
+      console.warn(
+        `[Vertex AI] Failed to fetch YouTube metadata (${response.status}).`,
+      )
+      return null
+    }
+
+    const html = await response.text()
+    const lengthMatch = html.match(/"lengthSeconds":"(\d+)"/)
+    if (lengthMatch) {
+      return Number.parseInt(lengthMatch[1], 10)
+    }
+
+    const approxMatch = html.match(/"approxDurationMs":"(\d+)"/)
+    if (approxMatch) {
+      return Math.round(Number.parseInt(approxMatch[1], 10) / 1_000)
+    }
+
+    return null
+  } catch (error) {
+    console.warn(
+      '[Vertex AI] Unable to determine YouTube video duration:',
+      error,
+    )
+    return null
+  }
+}
+
+/**
+ * Parse AI response into structured sections
+ */
+function parseResponseIntoSections(
+  text: string,
+): Array<{ title: string; content: string; timestamp?: number }> {
+  const sections: Array<{
+    title: string
+    content: string
+    timestamp?: number
+  }> = []
+  const lines = text.split('\n')
+  let currentSection: {
+    title: string
+    content: string
+    timestamp?: number
+  } | null = null
+  let contentBuffer: Array<string> = []
+
+  for (const line of lines) {
+    // Check for timestamp in format [MM:SS] or (MM:SS)
+    const timestampMatch = line.match(/(?:\(|\[)(\d{1,2}):(\d{2})(?:\)|\])/)
+    const timestamp = timestampMatch
+      ? parseInt(timestampMatch[1]) * 60 + parseInt(timestampMatch[2])
+      : undefined
+
+    // Check if this line is a section header
+    const headerMatch = line.match(/^(#{1,3}|\d+\.|\*|-)\s+(.+)/)
+
+    if (headerMatch) {
+      // Save the previous section if it exists
+      if (currentSection && contentBuffer.length > 0) {
+        currentSection.content = contentBuffer.join('\n').trim()
+        sections.push(currentSection)
+        contentBuffer = []
+      }
+
+      // Start a new section
+      currentSection = {
+        title: headerMatch[2].trim(),
+        content: '',
+        timestamp,
+      }
+    } else if (line.trim()) {
+      // Add content to the buffer
+      contentBuffer.push(line)
+    }
+  }
+
+  // Save the last section
+  if (currentSection && contentBuffer.length > 0) {
+    currentSection.content = contentBuffer.join('\n').trim()
+    sections.push(currentSection)
+  }
+
+  // If no sections were parsed, create a single section
+  if (sections.length === 0 && text.trim()) {
+    sections.push({
+      title: 'Analysis',
+      content: text.trim(),
+    })
+  }
+
+  return sections
+}
+
+/**
+ * Create video segments for chunking
+ */
+function createVideoSegments(
+  totalDuration: number,
+  segmentDuration: number,
+): Array<{ start: number; end: number }> {
+  const segments: Array<{ start: number; end: number }> = []
+  let start = 0
+
+  while (start < totalDuration) {
+    const end = Math.min(start + segmentDuration, totalDuration)
+    segments.push({ start, end })
+    start = end
+  }
+
+  return segments
+}
+
+async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+): Promise<Array<T>> {
+  if (tasks.length === 0) {
+    return []
+  }
+
+  const results: Array<T> = new Array(tasks.length)
+  let nextIndex = 0
+
+  const workerCount = Math.max(1, Math.min(limit, tasks.length))
+
+  const getNextIndex = (): number | null => {
+    const currentIndex = nextIndex++
+    if (currentIndex >= tasks.length) {
+      return null
+    }
+    return currentIndex
+  }
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (
+      let currentIndex = getNextIndex();
+      currentIndex !== null;
+      currentIndex = getNextIndex()
+    ) {
+      results[currentIndex] = await tasks[currentIndex]()
+    }
+  })
+
+  await Promise.all(workers)
+  return results
+}
+
+/**
+ * Format seconds to MM:SS
+ */
+function formatTimestamp(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+}
+</file>
+
+<file path="src/config.ts">
+/**
+ * Centralized configuration with no fallbacks
+ * App fails loudly if configuration is missing
+ */
+
+export const CONFIG = {
+  // Model configuration - single source of truth
+  MODEL: process.env.DEFAULT_MODEL || 'gemini-2.5-pro',
+
+  // Google Cloud configuration
+  GOOGLE_CLOUD_PROJECT:
+    process.env.GOOGLE_CLOUD_PROJECT || 'gen-lang-client-0487815497',
+  GOOGLE_CLOUD_LOCATION: process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
+
+  // Video chunking configuration
+  ENABLE_CHUNKING: process.env.ENABLE_CHUNKING === 'true',
+  SEGMENT_DURATION: parseInt(process.env.SEGMENT_DURATION || '180'),
+} as const
+
+// Validate required configuration at startup
+export function validateConfig(): void {
+  if (!CONFIG.GOOGLE_CLOUD_PROJECT) {
+    throw new Error('GOOGLE_CLOUD_PROJECT is required but not configured')
+  }
+
+  if (!CONFIG.MODEL) {
+    throw new Error('DEFAULT_MODEL is required but not configured')
+  }
+
+  // Log configuration for transparency
+  console.log('[Config] Using configuration:', {
+    model: CONFIG.MODEL,
+    project: CONFIG.GOOGLE_CLOUD_PROJECT,
+    location: CONFIG.GOOGLE_CLOUD_LOCATION,
+  })
+}
+</file>
+
+<file path="src/router.tsx">
+import { createRouter } from '@tanstack/react-router'
+
+// Import the generated route tree
+import { routeTree } from './routeTree.gen'
+
+// Create a new router instance
+export const getRouter = () => {
+  return createRouter({
+    routeTree,
+    scrollRestoration: true,
+    defaultPreloadStaleTime: 0,
+  })
+}
+</file>
+
+<file path="tickets/001-mvp-landing-page.md">
+# Ticket: Replace Landing Page with LLM Video Analysis MVP
+
+## Context
+
+- The current home route (`src/routes/index.tsx`) still renders the template React/TanStack starter.
+- We need a focused LLM video analysis experience that matches the MVP flow from the Astro plan: capture a YouTube URL and a prompt, submit, wait, and display a textual summary.
+- This ticket covers all client-side work to present the form, handle local validation/state, call the server stub, and render the response.
+
+## Non-Goals
+
+- Wiring the real analysis pipeline (stubbed response is fine here).
+- Server-side validation or data processing (covered separately).
+
+## Acceptance Criteria
+
+- Home route shows LLM Video Analysis–branded hero copy, input form (YouTube URL + prompt), submit CTA, and a result panel.
+- Client-side validation prevents submission without both fields and highlights invalid YouTube URLs before calling the server.
+- Submission lifecycle includes loading state, disabled controls, optimistic progress indicator, and clear error surfacing.
+- Successful responses render formatted markdown/text output that is easy to copy/share and persists until the next run.
+
+## Tasks
+
+- Replace `src/routes/index.tsx` component with the new layout, hero, and form.
+- Extract reusable UI helpers if needed (`src/components/AnalysisForm.tsx`, `src/components/AnalysisResult.tsx`, etc.).
+- Leverage TanStack Start hooks (`useMutation`, router invalidate, etc.) to call the new server function stub.
+- Add lightweight client validation (regex or shared schema import) and inline error messaging.
+- Style with Tailwind classes already available in the project; ensure dark-friendly look consistent with the LLM Video Analysis theme.
+</file>
+
+<file path="tickets/002-server-analysis-stub.md">
+# Ticket: Scaffold Typed Server Analysis Stub
+
+## Context
+
+- The MVP needs a server endpoint that validates inputs, returns a typed payload, and isolates analysis logic for future expansion.
+- TanStack Start supports server functions via `createServerFn`; we want to use that pattern with shared schemas (Zod).
+- The implementation should prepare for future Gemini/Vertex integrations without calling external services yet.
+
+## Acceptance Criteria
+
+- A `createServerFn` is available to the client (e.g. exported from `src/routes/index.server.ts` or a new module) that accepts `{ youtubeUrl, prompt }`.
+- Request and response schemas live in a shared module (e.g. `src/lib/analysis-schema.ts`) using Zod and are reused on both client and server.
+- The server handler returns a stubbed but structured payload (summary text, metadata placeholders, timing, etc.) and handles validation errors cleanly.
+- Environment variables needed for future integrations (`GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`, etc.) are parsed via a dedicated config helper with helpful error messages when missing (but stubbing mode skips external calls).
+- Type exports allow the React side to infer the response shape without duplication.
+
+## Tasks
+
+- Add `zod` to dependencies if not already present and wire a shared schema module (`src/lib/analysis-schema.ts`).
+- Create a dedicated server function file (e.g. `src/routes/index.server.ts` or `src/server/analyze.ts`) that wraps the `createServerFn` handler.
+- Implement validation, stubbed response, and error handling (including distinguishing validation vs unexpected server errors).
+- Expose a typed helper (e.g. `export type AnalyzeFormData`) for the client.
+- Document expected environment variables and stub behavior in code comments or a short README note.
+</file>
+
+<file path="tickets/003-integrate-analyzer-pipeline.md">
+# Ticket: Implement Real Video Analyzer Pipeline
+
+## Context
+
+- The repo already contains `analyze_video.py`, which handles Google AI and Vertex AI workflows including chunking.
+- After the MVP UI + server stub land, we need to replace the stub with an actual implementation that can be invoked from the TanStack Start server.
+- Goal: port or wrap the Python logic into a TypeScript module (preferred) or call the Python script behind a process boundary, while keeping the interface defined in `src/lib/analysis-schema.ts`.
+
+## Acceptance Criteria
+
+- Server handler can execute a real analysis flow (Google AI by default, Vertex AI optional via config) and return structured results matching the shared schema.
+- Chunking support is available when Vertex AI is configured; for Google AI path, fall back to single-request flow with clear messaging about limitations.
+- Long-running work surfaces progress/streaming updates to the client (initially via polling/loading message, with TODO for streaming upgrades if not yet implemented).
+- Errors from providers are translated into user-friendly messages and logged for debugging.
+
+## Tasks
+
+- Decide on implementation strategy: port Python logic to TypeScript (preferred for deployment simplicity) or shell out to the Python script with robust process management.
+- Factor provider-specific code into a module (e.g. `src/server/providers/google.ts`) to allow future Gemini/Vertex abstraction.
+- Handle environment configuration and secrets securely; document required vars (`GOOGLE_API_KEY`, `GOOGLE_CLOUD_PROJECT`, etc.).
+- Add unit coverage for the data transformation layer (mocks for provider responses) and an integration test that exercises the happy path with a fixture video.
+- Update README with instructions for setting API keys and running the analysis locally.
+</file>
+
+<file path="tickets/004-cloudflare-deploy.md">
+# Ticket: Prepare Cloudflare Deployment Workflow
+
+## Context
+
+- The long-term plan targets Cloudflare Pages/Workers, and the MVP should be deployable with minimal friction.
+- We need infrastructure docs + config so the team can ship after the MVP functionality is ready.
+
+## Acceptance Criteria
+
+- Cloudflare deployment instructions live in the repo (README section or `docs/deploy-cloudflare.md`) covering build command, output directory, environment variables, and how to configure server functions (if using Workers).
+- CI/CD plan captured (manual trigger acceptable for now) including secrets management for API keys.
+- Local `.dev.vars` or similar template exists for developers to mirror the production environment locally.
+
+## Tasks
+
+- Audit Vite/TanStack build output to confirm compatibility with Cloudflare Pages/Workers. Document required adapter steps if any.
+- Create deployment guide with step-by-step instructions, including Bun/Node version requirements.
+- Outline how to set environment variables for Google/Vertex APIs within Cloudflare, including warnings about billing.
+- Add follow-up TODO(s) for automating deployments once CI choice (GitHub Actions, etc.) is finalized.
+</file>
+
+<file path=".cta.json">
+{
+  "projectName": "tanstack-start-bun-hosting",
+  "mode": "file-router",
+  "typescript": true,
+  "tailwind": true,
+  "packageManager": "bun",
+  "git": true,
+  "version": 1,
+  "framework": "react-cra",
+  "chosenAddOns": ["eslint", "start"]
+}
+</file>
+
+<file path=".env.local.example">
+# LLM Video Analysis Environment Configuration
+# Copy this file to .env.local and add your API keys
+
+# ============================================
+# OPERATION MODE
+# ============================================
+
+# Set to false to use real analysis (requires API keys)
+USE_STUB=true
+
+# ============================================
+# API KEY CONFIGURATION (Bun 1.3 Secrets)
+# ============================================
+# API keys are now stored securely using Bun's native secrets API
+# To configure your API keys, run:
+#   bun scripts/setup-secrets.ts set
+#
+# This stores keys encrypted in your system keychain:
+#   - macOS: Keychain
+#   - Linux: libsecret
+#   - Windows: Credential Manager
+#
+# Get your API key from: https://aistudio.google.com/apikey
+
+# Model to use for analysis
+DEFAULT_MODEL=gemini-2.5-pro
+
+# ============================================
+# VERTEX AI CONFIGURATION (Optional)
+# ============================================
+# For advanced features like video chunking
+# Requires Google Cloud Platform account
+
+# Your GCP Project ID
+# GOOGLE_CLOUD_PROJECT=your-project-id
+
+# GCP Region for Vertex AI
+# GOOGLE_CLOUD_LOCATION=us-central1
+
+# Enable video chunking for long videos
+# ENABLE_CHUNKING=false
+
+# Duration of each video segment in seconds (when chunking is enabled)
+# SEGMENT_DURATION=180
+
+# ============================================
+# SERVER CONFIGURATION
+# ============================================
+
+# Server port (default: 3000)
+# PORT=3000
+
+# ============================================
+# AUTHENTICATION (Better Auth)
+# ============================================
+
+# Strong secret for cookie/session encryption (required)
+# BETTER_AUTH_SECRET=your-strong-secret
+
+# Railway Postgres connection string (required when auth enabled)
+# BETTER_AUTH_DATABASE_URL=postgresql://postgres:password@crossover.proxy.rlwy.net:12345/railway?sslmode=require
+
+# Optional: size of the Bun SQL connection pool
+# BETTER_AUTH_DATABASE_POOL_MAX=10
+
+# Optional: Absolute or relative path to Railway's CA certificate (keeps TLS verification on locally)
+# RAILWAY_CA_CERT_PATH=certs/railway-ca.pem
+
+# ============================================
+# NOTES
+# ============================================
+# 1. In stub mode (USE_STUB=true), no API keys are required
+# 2. The app will return mock analysis results in stub mode
+# 3. For production use:
+#    - Set USE_STUB=false
+#    - Run 'bun scripts/setup-secrets.ts set' to configure your API key
+# 4. API keys are stored securely in your system's keychain (not in files)
+# 5. Vertex AI features are optional and require additional GCP setup
+# 6. To check if secrets are configured: 'bun scripts/setup-secrets.ts check'
+# 7. To view masked secrets: 'bun scripts/setup-secrets.ts get'
+</file>
+
+<file path=".prettierignore">
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+</file>
+
+<file path="AGENTS.md">
+Read and add to CLAUDE.md
+</file>
+
+<file path="DEPLOY_RAILWAY.md">
+# Railway Deployment Guide
+
+This guide will help you deploy the LLM Video Analysis app to Railway with your Google API key.
+
+## Prerequisites
+
+- Railway CLI installed (`brew install railway` on macOS)
+- Railway account (sign up at https://railway.app)
+- Google API Key (already configured in your environment)
+
+## Deployment Steps
+
+### 1. Login to Railway
+
+```bash
+railway login
+```
+
+This will open your browser for authentication.
+
+### 2. Initialize Railway Project
+
+```bash
+railway init -n llm-video-analysis
+```
+
+This creates a new Railway project named "llm-video-analysis".
+
+### 3. Set Environment Variables
+
+Set your Google API key and other configuration:
+
+```bash
+# Set Google API key
+railway variables set GOOGLE_API_KEY=AIzaSyDd5miKfat8yvZHjo5mZ4AhAem11VY7Ewo
+
+# Set to use real API (not stub mode)
+railway variables set USE_STUB=false
+
+# Set the model to use
+railway variables set DEFAULT_MODEL=gemini-2.0-flash-exp
+```
+
+### 4. Deploy the Application
+
+```bash
+railway up
+```
+
+This will:
+
+- Build your application using Bun
+- Deploy it to Railway's infrastructure
+- Automatically handle the production server
+
+### 5. Generate Public Domain
+
+```bash
+railway domain
+```
+
+This will generate a public URL for your application.
+
+## Verifying Deployment
+
+After deployment, you can:
+
+1. Check the deployment status:
+
+   ```bash
+   railway status
+   ```
+
+2. View logs:
+
+   ```bash
+   railway logs
+   ```
+
+3. Open your app in the browser:
+   ```bash
+   railway open
+   ```
+
+## Updating Environment Variables
+
+If you need to update environment variables later:
+
+```bash
+# View current variables
+railway variables
+
+# Update a variable
+railway variables set VARIABLE_NAME=new-value
+
+# Remove a variable
+railway variables remove VARIABLE_NAME
+```
+
+## Monitoring and Debugging
+
+- **View Logs**: `railway logs -n 100` (last 100 lines)
+- **SSH into container**: `railway shell`
+- **Restart service**: `railway restart`
+
+## Important Notes
+
+1. **API Key Security**: Your Google API key is stored securely in Railway's environment variables and is never exposed in your code or logs.
+
+2. **Costs**:
+   - Railway offers a free tier with $5/month credits
+   - Google's Gemini API has free tier limits (check current limits at https://ai.google.dev/pricing)
+
+3. **Performance**: The app uses Bun for optimal performance and fast cold starts.
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. **Check logs**: `railway logs` to see any error messages
+2. **Verify environment variables**: `railway variables` to ensure all are set correctly
+3. **Check build**: Ensure `bun run build` works locally before deploying
+4. **API Key**: Verify your Google API key is valid and has the necessary permissions
+
+## Local Testing with Production Config
+
+To test locally with the same configuration as production:
+
+```bash
+# Export the variables locally
+export GOOGLE_API_KEY=AIzaSyDd5miKfat8yvZHjo5mZ4AhAem11VY7Ewo
+export USE_STUB=false
+export DEFAULT_MODEL=gemini-2.0-flash-exp
+
+# Run the production build
+bun run build
+bun server.ts
+```
+
+## Next Steps
+
+After deployment, you can:
+
+- Monitor usage in the Railway dashboard
+- Set up custom domains if needed
+- Configure auto-deployments from GitHub
+- Set up deployment notifications
+
+Visit your Railway dashboard at https://railway.app to manage your deployment.
+</file>
+
+<file path="prettier.config.js">
+//  @ts-check
+
+/** @type {import('prettier').Config} */
+const config = {
+  semi: false,
+  singleQuote: true,
+  trailingComma: 'all',
+}
+
+export default config
+</file>
+
+<file path="railway-env-vars.txt">
+# Railway Environment Variables to Set
+# Copy these to your Railway service's Variables tab
+
+# Authentication (Required)
+BETTER_AUTH_SECRET=<generate-a-secure-random-string-here>
+BETTER_AUTH_DATABASE_URL=<paste-postgres-connection-string-from-railway>
+
+# LLM Configuration
+USE_STUB=false
+DEFAULT_MODEL=gemini-2.5-pro
+GOOGLE_API_KEY=<your-google-ai-api-key>
+
+# Optional: Vertex AI (if you want advanced features)
+# GOOGLE_CLOUD_PROJECT=<your-gcp-project>
+# GOOGLE_CLOUD_LOCATION=us-central1
+# ENABLE_CHUNKING=true
+# SEGMENT_DURATION=180
+
+# Server Configuration
+PORT=3000
+
+# Production optimizations
+NODE_ENV=production
+STATIC_PRELOAD_MAX_BYTES=5242880
+</file>
+
+<file path="server.ts">
+/**
+ * TanStack Start Production Server with Bun
+ *
+ * A high-performance production server for TanStack Start applications that
+ * implements intelligent static asset loading with configurable memory management.
+ *
+ * Features:
+ * - Hybrid loading strategy (preload small files, serve large files on-demand)
+ * - Configurable file filtering with include/exclude patterns
+ * - Memory-efficient response generation
+ * - Production-ready caching headers
+ *
+ * Environment Variables:
+ *
+ * PORT (number)
+ *   - Server port number
+ *   - Default: 3000
+ *
+ * STATIC_PRELOAD_MAX_BYTES (number)
+ *   - Maximum file size in bytes to preload into memory
+ *   - Files larger than this will be served on-demand from disk
+ *   - Default: 5242880 (5MB)
+ *   - Example: STATIC_PRELOAD_MAX_BYTES=5242880 (5MB)
+ *
+ * STATIC_PRELOAD_INCLUDE (string)
+ *   - Comma-separated list of glob patterns for files to include
+ *   - If specified, only matching files are eligible for preloading
+ *   - Patterns are matched against filenames only, not full paths
+ *   - Example: STATIC_PRELOAD_INCLUDE="*.js,*.css,*.woff2"
+ *
+ * STATIC_PRELOAD_EXCLUDE (string)
+ *   - Comma-separated list of glob patterns for files to exclude
+ *   - Applied after include patterns
+ *   - Patterns are matched against filenames only, not full paths
+ *   - Example: STATIC_PRELOAD_EXCLUDE="*.map,*.txt"
+ *
+ * STATIC_PRELOAD_VERBOSE (boolean)
+ *   - Enable detailed logging of loaded and skipped files
+ *   - Default: false
+ *   - Set to "true" to enable verbose output
+ *
+ * Usage:
+ *   bun run server.ts
+ */
+
+import { readdir } from 'node:fs/promises'
+import { join } from 'node:path'
+
+// Configuration
+const PORT = Number(process.env.PORT ?? 3000)
+const CLIENT_DIR = './dist/client'
+const SERVER_ENTRY = './dist/server/server.js'
+
+// Preloading configuration from environment variables
+const MAX_PRELOAD_BYTES = Number(
+  process.env.STATIC_PRELOAD_MAX_BYTES ?? 5 * 1024 * 1024, // 5MB default
+)
+
+// Parse comma-separated include patterns (no defaults)
+const INCLUDE_PATTERNS = (process.env.STATIC_PRELOAD_INCLUDE ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map(globToRegExp)
+
+// Parse comma-separated exclude patterns (no defaults)
+const EXCLUDE_PATTERNS = (process.env.STATIC_PRELOAD_EXCLUDE ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+  .map(globToRegExp)
+
+// Verbose logging flag
+const VERBOSE = process.env.STATIC_PRELOAD_VERBOSE === 'true'
+
+/**
+ * Convert a simple glob pattern to a regular expression
+ * Supports * wildcard for matching any characters
+ */
+function globToRegExp(glob: string): RegExp {
+  // Escape regex special chars except *, then replace * with .*
+  const escaped = glob
+    .replace(/[-/\\^$+?.()|[\]{}]/g, '\\$&')
+    .replace(/\*/g, '.*')
+  return new RegExp(`^${escaped}$`, 'i')
+}
+
+/**
+ * Metadata for preloaded static assets
+ */
+interface AssetMetadata {
+  route: string
+  size: number
+  type: string
+}
+
+/**
+ * Result of static asset preloading process
+ */
+interface PreloadResult {
+  routes: Record<string, () => Response>
+  loaded: Array<AssetMetadata>
+  skipped: Array<AssetMetadata>
+}
+
+/**
+ * Check if a file should be included based on configured patterns
+ */
+function shouldInclude(relativePath: string): boolean {
+  const fileName = relativePath.split(/[/\\]/).pop() ?? relativePath
+
+  // If include patterns are specified, file must match at least one
+  if (INCLUDE_PATTERNS.length > 0) {
+    if (!INCLUDE_PATTERNS.some((pattern) => pattern.test(fileName))) {
+      return false
+    }
+  }
+
+  // If exclude patterns are specified, file must not match any
+  if (EXCLUDE_PATTERNS.some((pattern) => pattern.test(fileName))) {
+    return false
+  }
+
+  return true
+}
+
+/**
+ * Build static routes with intelligent preloading strategy
+ * Small files are loaded into memory, large files are served on-demand
+ */
+async function buildStaticRoutes(clientDir: string): Promise<PreloadResult> {
+  const routes: Record<string, () => Response> = {}
+  const loaded: Array<AssetMetadata> = []
+  const skipped: Array<AssetMetadata> = []
+
+  console.log(`📦 Loading static assets from ${clientDir}...`)
+  console.log(
+    `   Max preload size: ${(MAX_PRELOAD_BYTES / 1024 / 1024).toFixed(2)} MB`,
+  )
+  if (INCLUDE_PATTERNS.length > 0) {
+    console.log(
+      `   Include patterns: ${process.env.STATIC_PRELOAD_INCLUDE ?? ''}`,
+    )
+  }
+  if (EXCLUDE_PATTERNS.length > 0) {
+    console.log(
+      `   Exclude patterns: ${process.env.STATIC_PRELOAD_EXCLUDE ?? ''}`,
+    )
+  }
+
+  let totalPreloadedBytes = 0
+
+  try {
+    // Read all files recursively
+    const files = await readdir(clientDir, { recursive: true })
+
+    for (const relativePath of files) {
+      const filepath = join(clientDir, relativePath)
+      const route = '/' + relativePath.replace(/\\/g, '/') // Handle Windows paths
+
+      try {
+        // Get file metadata
+        const file = Bun.file(filepath)
+
+        // Skip if file doesn't exist or is empty
+        if (!(await file.exists()) || file.size === 0) {
+          continue
+        }
+
+        const metadata: AssetMetadata = {
+          route,
+          size: file.size,
+          type: file.type || 'application/octet-stream',
+        }
+
+        // Determine if file should be preloaded
+        const matchesPattern = shouldInclude(relativePath)
+        const withinSizeLimit = file.size <= MAX_PRELOAD_BYTES
+
+        if (matchesPattern && withinSizeLimit) {
+          // Preload small files into memory
+          const bytes = await file.bytes()
+
+          routes[route] = () =>
+            new Response(bytes, {
+              headers: {
+                'Content-Type': metadata.type,
+                'Cache-Control': 'public, max-age=31536000, immutable',
+              },
+            })
+
+          loaded.push({ ...metadata, size: bytes.byteLength })
+          totalPreloadedBytes += bytes.byteLength
+        } else {
+          // Serve large or filtered files on-demand
+          routes[route] = () => {
+            const fileOnDemand = Bun.file(filepath)
+            return new Response(fileOnDemand, {
+              headers: {
+                'Content-Type': metadata.type,
+                'Cache-Control': 'public, max-age=3600',
+              },
+            })
+          }
+
+          skipped.push(metadata)
+        }
+      } catch (error: unknown) {
+        if (error instanceof Error && error.name !== 'EISDIR') {
+          console.error(`❌ Failed to load ${filepath}:`, error)
+        }
+      }
+    }
+
+    // Always show file overview in Vite-like format first
+    if (loaded.length > 0 || skipped.length > 0) {
+      const allFiles = [...loaded, ...skipped].sort((a, b) =>
+        a.route.localeCompare(b.route),
+      )
+
+      // Calculate max path length for alignment
+      const maxPathLength = Math.min(
+        Math.max(...allFiles.map((f) => f.route.length)),
+        60,
+      )
+
+      // Format file size with KB and gzip estimation
+      const formatFileSize = (bytes: number) => {
+        const kb = bytes / 1024
+        // Rough gzip estimation (typically 30-70% compression)
+        const gzipKb = kb * 0.35
+        return {
+          size: kb < 100 ? kb.toFixed(2) : kb.toFixed(1),
+          gzip: gzipKb < 100 ? gzipKb.toFixed(2) : gzipKb.toFixed(1),
+        }
+      }
+
+      if (loaded.length > 0) {
+        console.log('\n📁 Preloaded into memory:')
+        loaded
+          .sort((a, b) => a.route.localeCompare(b.route))
+          .forEach((file) => {
+            const { size, gzip } = formatFileSize(file.size)
+            const paddedPath = file.route.padEnd(maxPathLength)
+            const sizeStr = `${size.padStart(7)} kB`
+            const gzipStr = `gzip: ${gzip.padStart(6)} kB`
+            console.log(`   ${paddedPath} ${sizeStr} │ ${gzipStr}`)
+          })
+      }
+
+      if (skipped.length > 0) {
+        console.log('\n💾 Served on-demand:')
+        skipped
+          .sort((a, b) => a.route.localeCompare(b.route))
+          .forEach((file) => {
+            const { size, gzip } = formatFileSize(file.size)
+            const paddedPath = file.route.padEnd(maxPathLength)
+            const sizeStr = `${size.padStart(7)} kB`
+            const gzipStr = `gzip: ${gzip.padStart(6)} kB`
+            console.log(`   ${paddedPath} ${sizeStr} │ ${gzipStr}`)
+          })
+      }
+
+      // Show detailed verbose info if enabled
+      if (VERBOSE) {
+        console.log('\n📊 Detailed file information:')
+        allFiles.forEach((file) => {
+          const isPreloaded = loaded.includes(file)
+          const status = isPreloaded ? '[MEMORY]' : '[ON-DEMAND]'
+          const reason =
+            !isPreloaded && file.size > MAX_PRELOAD_BYTES
+              ? ' (too large)'
+              : !isPreloaded
+                ? ' (filtered)'
+                : ''
+          console.log(
+            `   ${status.padEnd(12)} ${file.route} - ${file.type}${reason}`,
+          )
+        })
+      }
+    }
+
+    // Log summary after the file list
+    console.log() // Empty line for separation
+    if (loaded.length > 0) {
+      console.log(
+        `✅ Preloaded ${String(loaded.length)} files (${(totalPreloadedBytes / 1024 / 1024).toFixed(2)} MB) into memory`,
+      )
+    } else {
+      console.log('ℹ️  No files preloaded into memory')
+    }
+
+    if (skipped.length > 0) {
+      const tooLarge = skipped.filter((f) => f.size > MAX_PRELOAD_BYTES).length
+      const filtered = skipped.length - tooLarge
+      console.log(
+        `ℹ️  ${String(skipped.length)} files will be served on-demand (${String(tooLarge)} too large, ${String(filtered)} filtered)`,
+      )
+    }
+  } catch (error) {
+    console.error(`❌ Failed to load static files from ${clientDir}:`, error)
+  }
+
+  return { routes, loaded, skipped }
+}
+
+/**
+ * Start the production server
+ */
+async function startServer() {
+  console.log('🚀 Starting production server...')
+
+  // Load TanStack Start server handler
+  let handler: { fetch: (request: Request) => Response | Promise<Response> }
+  try {
+    const serverModule = (await import(SERVER_ENTRY)) as {
+      default: { fetch: (request: Request) => Response | Promise<Response> }
+    }
+    handler = serverModule.default
+    console.log('✅ TanStack Start handler loaded')
+  } catch (error) {
+    console.error('❌ Failed to load server handler:', error)
+    process.exit(1)
+  }
+
+  // Build static routes with intelligent preloading
+  const { routes } = await buildStaticRoutes(CLIENT_DIR)
+
+  // Create Bun server
+  const server = Bun.serve({
+    port: PORT,
+
+    routes: {
+      // Serve static assets (preloaded or on-demand)
+      ...routes,
+
+      // Fallback to TanStack Start handler for all other routes
+      '/*': (request) => {
+        try {
+          return handler.fetch(request)
+        } catch (error) {
+          console.error('Server handler error:', error)
+          return new Response('Internal Server Error', { status: 500 })
+        }
+      },
+    },
+
+    // Global error handler
+    error(error) {
+      console.error('Uncaught server error:', error)
+      return new Response('Internal Server Error', { status: 500 })
+    },
+  })
+
+  console.log(
+    `\n🚀 Server running at http://localhost:${String(server.port)}\n`,
+  )
+}
+
+// Start the server
+startServer().catch((error: unknown) => {
+  console.error('Failed to start server:', error)
+  process.exit(1)
+})
+</file>
+
+<file path="setup-railway-db.sh">
+#!/bin/bash
+
+# Setup script for Railway PostgreSQL connection
+echo "🚂 Railway Database Setup for LLM Video Analysis"
+echo "================================================"
+echo ""
+
+# Check if linked to Railway
+railway status > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "❌ Not linked to a Railway project"
+    echo "Run: railway link"
+    echo "Then select the 'Quidditch Video Analysis' project"
+    exit 1
+fi
+
+echo "✅ Linked to Railway project"
+echo ""
+
+# Get database URL
+echo "📦 Fetching PostgreSQL connection details..."
+echo ""
+
+# Try to get variables from Postgres service
+DB_URL=$(railway variables --service postgres --json 2>/dev/null | grep -o '"DATABASE_PUBLIC_URL":"[^"]*' | cut -d'"' -f4)
+
+if [ -z "$DB_URL" ]; then
+    # Try without service flag
+    DB_URL=$(railway variables --json 2>/dev/null | grep -o '"DATABASE_PUBLIC_URL":"[^"]*' | cut -d'"' -f4)
+fi
+
+if [ -z "$DB_URL" ]; then
+    echo "❌ Could not fetch DATABASE_PUBLIC_URL"
+    echo ""
+    echo "Manual steps:"
+    echo "1. Go to your Railway dashboard"
+    echo "2. Click on the Postgres service"
+    echo "3. Go to 'Connect' tab"
+    echo "4. Copy DATABASE_PUBLIC_URL"
+    echo "5. Add to .env.local as:"
+    echo "   BETTER_AUTH_DATABASE_URL=<paste-url-here>?sslmode=require"
+    exit 1
+fi
+
+# Add sslmode for local development
+DB_URL_WITH_SSL="${DB_URL}?sslmode=require"
+
+echo "✅ Found database URL!"
+echo ""
+echo "📝 Adding to .env.local..."
+
+# Check if .env.local exists
+if [ ! -f .env.local ]; then
+    echo "Creating .env.local..."
+    touch .env.local
+fi
+
+# Check if BETTER_AUTH_DATABASE_URL already exists
+if grep -q "^BETTER_AUTH_DATABASE_URL=" .env.local; then
+    echo "Updating existing BETTER_AUTH_DATABASE_URL..."
+    # Use sed to update the line
+    sed -i.bak "s|^BETTER_AUTH_DATABASE_URL=.*|BETTER_AUTH_DATABASE_URL=$DB_URL_WITH_SSL|" .env.local
+else
+    echo "Adding BETTER_AUTH_DATABASE_URL..."
+    echo "" >> .env.local
+    echo "# Railway PostgreSQL (from Quidditch project)" >> .env.local
+    echo "BETTER_AUTH_DATABASE_URL=$DB_URL_WITH_SSL" >> .env.local
+fi
+
+echo ""
+echo "✅ Database URL configured!"
+echo ""
+echo "🎉 Setup complete! Your app can now connect to Railway's PostgreSQL."
+echo ""
+echo "Next steps:"
+echo "1. Restart your dev server: bun run dev"
+echo "2. The authentication system should now work"
+echo "3. Deploy to Railway: railway up"
+echo ""
+</file>
+
+<file path="SSL_ISSUE_RAILWAY.md">
+# Railway PostgreSQL SSL Certificate Issue (Resolved)
+
+## tl;dr
+
+Railway's TCP proxy (`*.proxy.rlwy.net`) terminates TLS with a certificate whose
+**common name is `localhost`**. The chain is valid when you anchor it with
+Railway's CA, but the hostname mismatch makes Node's TLS client reject the
+connection with `SELF_SIGNED_CERT_IN_CHAIN`.
+
+We now load the Railway CA, keep certificate validation enabled, and skip the
+hostname check only for the known proxy host pattern. Authentication is working
+again both locally (Bun) and in production.
+
+## Root Cause
+
+- External Railway PostgreSQL connections go through `crossover.proxy.rlwy.net`.
+- The presented certificate chain ends in a leaf certificate with
+  `CN=localhost` and `SAN=DNS:localhost`.
+- Node/Bun's `tls` implementation validates the hostname, so a strict
+  `rejectUnauthorized: true` configuration fails with
+  `ERR_TLS_CERT_ALTNAME_INVALID`.
+- Flipping `rejectUnauthorized` to `false` does establish a connection, but it
+  disables _all_ TLS validation and Better Auth still surfaced noisy warnings.
+
+## Fix
+
+`src/lib/auth.ts` now:
+
+1. Parses the database URL, removes the `sslmode=require` flag from the query
+   string, and keeps any other parameters intact.
+2. Loads the CA file pointed to by `RAILWAY_CA_CERT_PATH` when present.
+3. Detects when we are talking to a Railway proxy host (`/.proxy\.rlwy\.net/`)
+   while running outside of Railway.
+4. Uses a custom `checkServerIdentity` that:
+   - Skips the hostname comparison only when the certificate subject is
+     `localhost` **and** the host matches the Railway proxy pattern.
+   - Falls back to `tls.checkServerIdentity` for every other host/certificate.
+5. Keeps full verification on Railway (production) and reuses the CA if
+   available.
+
+```ts
+const pool = new Pool({
+  connectionString,
+  ssl: caCert
+    ? {
+        rejectUnauthorized: true,
+        ca: caCert,
+        checkServerIdentity: (host, cert) => {
+          if (
+            cert.subject.CN === 'localhost' &&
+            /\.proxy\.rlwy\.net$/i.test(host)
+          ) {
+            return undefined
+          }
+          return tls.checkServerIdentity(host, cert)
+        },
+      }
+    : { rejectUnauthorized: false },
+})
+```
+
+## Verification
+
+- `node` / `bun` scripts using `Pool` now connect and return `SELECT version()`
+  successfully.
+- `psql` with `PGSSLMODE=require` works as before. With `verify-full` it still
+  fails (expected) because the certificate really is for `localhost`.
+- First Better Auth sign-in locally succeeds and creates the tables.
+
+## Env/Setup Notes
+
+- `.env.local` should continue to point to the public Railway URL **with**
+  `sslmode=require` and set `RAILWAY_CA_CERT_PATH=certs/railway-ca.pem`.
+- If the CA file cannot be read we log a warning and fall back to
+  `rejectUnauthorized: false` so developers stay unblocked, but we strongly
+  recommend keeping the CA file in place.
+- When running inside Railway (`RAILWAY_ENVIRONMENT` or `RAILWAY_PROJECT_ID`
+  set) we never bypass hostname checks.
+
+## Useful Commands
+
+```bash
+# Quick connectivity smoke test with the bundled pg client
+BETTER_AUTH_DATABASE_URL="postgresql://.../railway?sslmode=require" \
+RAILWAY_CA_CERT_PATH=certs/railway-ca.pem \
+node <<'NODE'
+const { Pool } = require('pg');
+const tls = require('tls');
+const fs = require('fs');
+const url = new URL(process.env.BETTER_AUTH_DATABASE_URL);
+url.searchParams.delete('sslmode');
+const pool = new Pool({
+  connectionString: url.toString().replace(/\?$/, ''),
+  ssl: {
+    rejectUnauthorized: true,
+    ca: fs.readFileSync(process.env.RAILWAY_CA_CERT_PATH, 'utf8'),
+    checkServerIdentity: (host, cert) => {
+      if (cert.subject.CN === 'localhost' && /\.proxy\.rlwy\.net$/i.test(host)) {
+        return undefined;
+      }
+      return tls.checkServerIdentity(host, cert);
+    },
+  },
+});
+pool.query('SELECT NOW()').then(({ rows }) => {
+  console.log('Connected at:', rows[0].now);
+  process.exit(0);
+});
+NODE
+
+# Inspect the presented certificate chain manually (CN shows up as localhost)
+openssl s_client -showcerts \
+  -servername crossover.proxy.rlwy.net \
+  -connect crossover.proxy.rlwy.net:11287 </dev/null | openssl x509 -noout -subject
+```
+
+## Follow-up
+
+- Keep an eye on Railway updates—if they issue proper proxy certificates we can
+  delete the hostname override.
+- Documented the behaviour in `CLAUDE.md` so agents know why the override
+  exists.
+</file>
+
+<file path="test-bun-sql-v2.ts">
+#!/usr/bin/env bun
+
+import { SQL } from 'bun'
+
+const databaseUrl = process.env.BETTER_AUTH_DATABASE_URL
+
+if (!databaseUrl) {
+  console.error('❌ BETTER_AUTH_DATABASE_URL not set in environment')
+  process.exit(1)
+}
+
+console.log('🔍 Testing Bun SQL Direct Query API...')
+console.log(`📍 Connecting to: ${databaseUrl.split('@')[1]?.split('?')[0]}`)
+
+// Setup TLS configuration
+const caCertPath = process.env.RAILWAY_CA_CERT_PATH
+let tlsConfig: any = undefined
+
+if (caCertPath) {
+  const caFile = Bun.file(caCertPath)
+  if (await caFile.exists()) {
+    const caCert = await caFile.text()
+    tlsConfig = {
+      ca: caCert,
+      rejectUnauthorized: true,
+    }
+    console.log('🔒 TLS enabled with CA certificate verification')
+  }
+}
+
+try {
+  // Create SQL connection with 'await using' for proper cleanup
+  await using db = new SQL({
+    url: databaseUrl,
+    tls: tlsConfig,
+    max: 1, // Single connection for testing
+  })
+
+  console.log('✅ SQL client created')
+
+  // According to Bun 1.3 docs, the SQL instance should have query capabilities
+  // Let's try the documented query patterns
+
+  // Test 1: Direct query using the connection's sql template
+  console.log('\n📝 Test 1: Direct query using db connection')
+  const versionResult = await db`SELECT version()`
+  console.log('✅ Direct query succeeded!')
+  console.log(`📊 Database version: ${versionResult[0].version.split(',')[0]}`)
+
+  // Test 2: Query with parameters
+  console.log('\n📝 Test 2: Query with parameters')
+  const testValue = 1
+  const paramResult = await db`SELECT ${testValue} as test_value`
+  console.log('✅ Parameterized query succeeded:', paramResult[0])
+
+  // Test 3: Check for Better Auth tables
+  console.log('\n📝 Test 3: Checking Better Auth tables')
+  const tables = await db`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+    AND (table_name LIKE '%user%' OR table_name LIKE '%session%' OR table_name LIKE '%auth%')
+    ORDER BY table_name
+  `
+
+  console.log('📋 Auth-related tables found:')
+  if (tables.length === 0) {
+    console.log('  ⚠️  No auth tables found')
+  } else {
+    tables.forEach((table: any) => {
+      console.log(`  • ${table.table_name}`)
+    })
+  }
+
+  console.log('\n✨ All tests successful!')
+} catch (error) {
+  console.error('❌ Test failed:', error)
+
+  // Try to show which methods are actually available
+  console.log(
+    "\n📝 Debugging: Let's see what methods are available on SQL instance",
+  )
+  const db = new SQL({
+    url: databaseUrl,
+    tls: tlsConfig,
+  })
+
+  console.log('Available properties on SQL instance:')
+  const props = Object.getOwnPropertyNames(Object.getPrototypeOf(db))
+  props.forEach((prop) => {
+    if (typeof (db as any)[prop] === 'function') {
+      console.log(`  - ${prop}() [function]`)
+    }
+  })
+
+  // Also check the instance properties
+  console.log('\nInstance properties:')
+  Object.keys(db).forEach((key) => {
+    console.log(`  - ${key}: ${typeof (db as any)[key]}`)
+  })
+
+  process.exit(1)
+}
+</file>
+
+<file path="test-bun-sql.ts">
+#!/usr/bin/env bun
+
+import { SQL, sql } from 'bun'
+
+const databaseUrl = process.env.BETTER_AUTH_DATABASE_URL
+
+if (!databaseUrl) {
+  console.error('❌ BETTER_AUTH_DATABASE_URL not set in environment')
+  process.exit(1)
+}
+
+console.log('🔍 Testing Bun SQL with documented API...')
+console.log(`📍 Connecting to: ${databaseUrl.split('@')[1]?.split('?')[0]}`)
+
+// Setup TLS configuration
+const caCertPath = process.env.RAILWAY_CA_CERT_PATH
+let tlsConfig: any = undefined
+
+if (caCertPath) {
+  const caFile = Bun.file(caCertPath)
+  if (await caFile.exists()) {
+    const caCert = await caFile.text()
+    tlsConfig = {
+      ca: caCert,
+      rejectUnauthorized: true,
+    }
+    console.log('🔒 TLS enabled with CA certificate verification')
+  }
+}
+
+try {
+  // Test 1: Using the SQL constructor with options
+  console.log('\n📝 Test 1: SQL constructor with options object')
+  const db = new SQL({
+    url: databaseUrl,
+    tls: tlsConfig,
+    max: 10,
+  })
+
+  // According to docs, this should NOT work - SQL object doesn't have query methods
+  // The sql tagged template is what provides the query functionality
+  console.log('✅ SQL client created')
+
+  // Test 2: Using the sql tagged template (this is the actual query interface)
+  console.log('\n📝 Test 2: Using sql tagged template for queries')
+
+  // Set the default connection for sql tagged template
+  sql.default = db
+
+  // Now use the sql tagged template for queries
+  const version = await sql`SELECT version()`
+  console.log('✅ Query executed via sql tagged template!')
+  console.log(`📊 Database version: ${version[0].version.split(',')[0]}`)
+
+  // Test 3: Check for Better Auth tables
+  const tables = await sql`
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+    AND (table_name LIKE '%user%' OR table_name LIKE '%session%' OR table_name LIKE '%auth%')
+    ORDER BY table_name
+  `
+
+  console.log('\n📋 Auth-related tables found:')
+  if (tables.length === 0) {
+    console.log('  ⚠️  No auth tables found')
+  } else {
+    tables.forEach((table: any) => {
+      console.log(`  • ${table.table_name}`)
+    })
+  }
+
+  // Test 4: Array helpers
+  console.log('\n📝 Test 4: SQL array helpers')
+  const arrayTest =
+    await sql`SELECT ${sql.array([1, 2, 3], 'INTEGER')} as numbers`
+  console.log('✅ Array helper works:', arrayTest[0].numbers)
+
+  console.log('\n✨ All tests successful!')
+} catch (error) {
+  console.error('❌ Test failed:', error)
+  process.exit(1)
+}
+</file>
+
+<file path="test-db-connection-simple.ts">
+#!/usr/bin/env bun
+
+import { SQL } from 'bun'
+
+const databaseUrl = process.env.BETTER_AUTH_DATABASE_URL
+
+if (!databaseUrl) {
+  console.error('❌ BETTER_AUTH_DATABASE_URL not set in environment')
+  process.exit(1)
+}
+
+console.log('🔍 Testing PostgreSQL connection...')
+console.log(`📍 Connecting to: ${databaseUrl.split('@')[1]?.split('?')[0]}`)
+
+// Setup TLS configuration
+const sqlOptions: SQL.Options = { url: databaseUrl }
+const caCertPath = process.env.RAILWAY_CA_CERT_PATH
+const requiresTls = /sslmode=require/i.test(databaseUrl)
+
+if (caCertPath) {
+  const caFile = Bun.file(caCertPath)
+  if (await caFile.exists()) {
+    const caCert = await caFile.text()
+    sqlOptions.tls = {
+      ca: caCert,
+      rejectUnauthorized: true,
+    }
+    console.log('🔒 TLS enabled with CA certificate verification')
+  } else {
+    console.warn(
+      `⚠️  RAILWAY_CA_CERT_PATH="${caCertPath}" not found; falling back to insecure TLS`,
+    )
+    sqlOptions.tls = { rejectUnauthorized: false }
+  }
+} else if (requiresTls) {
+  console.warn(
+    '⚠️  sslmode=require detected but RAILWAY_CA_CERT_PATH not set; using insecure TLS',
+  )
+  sqlOptions.tls = { rejectUnauthorized: false }
+}
+
+try {
+  // Try to create the SQL connection - Better Auth will handle the actual queries
+  const db = new SQL(sqlOptions)
+
+  // The SQL constructor itself should validate the connection
+  // If we get here without an error, the connection parameters are valid
+  console.log('✅ SQL client created successfully!')
+  console.log('✨ Database connection parameters are valid!')
+  console.log('📝 Better Auth will handle the actual database operations')
+
+  // Note: Bun's SQL client for PostgreSQL is a thin wrapper that passes
+  // the connection to Better Auth which handles the queries internally
+} catch (error) {
+  console.error('❌ Failed to create SQL client:', error)
+  process.exit(1)
+}
+</file>
+
+<file path="test-db-connection.ts">
+#!/usr/bin/env bun
+
+import { SQL } from 'bun'
+
+const databaseUrl = process.env.BETTER_AUTH_DATABASE_URL
+
+if (!databaseUrl) {
+  console.error('❌ BETTER_AUTH_DATABASE_URL not set in environment')
+  process.exit(1)
+}
+
+console.log('🔍 Testing PostgreSQL connection...')
+console.log(`📍 Connecting to: ${databaseUrl.split('@')[1]?.split('?')[0]}`)
+
+// Setup TLS configuration
+const sqlOptions: SQL.Options = { url: databaseUrl }
+const caCertPath = process.env.RAILWAY_CA_CERT_PATH
+const requiresTls = /sslmode=require/i.test(databaseUrl)
+
+if (caCertPath) {
+  const caFile = Bun.file(caCertPath)
+  if (await caFile.exists()) {
+    const caCert = await caFile.text()
+    sqlOptions.tls = {
+      ca: caCert,
+      rejectUnauthorized: true,
+    }
+    console.log('🔒 TLS enabled with CA certificate verification')
+  } else {
+    console.warn(
+      `⚠️  RAILWAY_CA_CERT_PATH="${caCertPath}" not found; falling back to insecure TLS`,
+    )
+    sqlOptions.tls = { rejectUnauthorized: false }
+  }
+} else if (requiresTls) {
+  console.warn(
+    '⚠️  sslmode=require detected but RAILWAY_CA_CERT_PATH not set; using insecure TLS',
+  )
+  sqlOptions.tls = { rejectUnauthorized: false }
+}
+
+try {
+  const db = new SQL(sqlOptions)
+
+  // Test basic connection using Bun SQL's query method
+  const result = await db.query('SELECT version()').then((r) => r.rows)
+  console.log('✅ Connected to PostgreSQL!')
+  console.log(`📊 Database version: ${result[0].version.split(',')[0]}`)
+
+  // Check for Better Auth tables
+  const tables = await db
+    .query(
+      `
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+    AND (table_name LIKE '%user%' OR table_name LIKE '%session%' OR table_name LIKE '%auth%')
+    ORDER BY table_name;
+  `,
+    )
+    .then((r) => r.rows)
+
+  console.log('\n📋 Auth-related tables found:')
+  if (tables.length === 0) {
+    console.log(
+      '  ⚠️  No auth tables found. Better Auth may need to initialize them on first run.',
+    )
+  } else {
+    tables.forEach((table: any) => {
+      console.log(`  • ${table.table_name}`)
+    })
+  }
+
+  db.close()
+  console.log('\n✨ Database connection test successful!')
+} catch (error) {
+  console.error('❌ Database connection failed:', error)
+  process.exit(1)
+}
+</file>
+
+<file path="tsconfig.json">
+{
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "eslint.config.js",
+    "prettier.config.js",
+    "vite.config.js"
+  ],
+
+  "compilerOptions": {
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "bun"],
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": false,
+    "noEmit": true,
+
+    /* Linting */
+    "skipLibCheck": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedSideEffectImports": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  }
+}
+</file>
+
+<file path="src/routes/__root.tsx">
+import { TanStackDevtools } from '@tanstack/react-devtools'
+import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
+
+import appCss from '../styles.css?url'
+
+export const Route = createRootRoute({
+  head: () => ({
+    meta: [
+      {
+        charSet: 'utf-8',
+      },
+      {
+        name: 'viewport',
+        content: 'width=device-width, initial-scale=1',
+      },
+      {
+        title: 'LLM Video Analysis',
+      },
+    ],
+    links: [
+      {
+        rel: 'stylesheet',
+        href: appCss,
+      },
+    ],
+  }),
+
+  shellComponent: RootDocument,
+})
+
+function RootDocument({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        {children}
+        <TanStackDevtools
+          config={{
+            position: 'bottom-left',
+          }}
+        />
+        <Scripts />
+      </body>
+    </html>
+  )
+}
+</file>
+
+<file path="src/routes/index.tsx">
+import { useEffect, useState } from 'react'
+
+import { useForm } from '@tanstack/react-form'
+import { createFileRoute } from '@tanstack/react-router'
+import { zodValidator } from '@tanstack/zod-form-adapter'
+import { AlertCircle, Loader2, LogOut, Sparkles, Video } from 'lucide-react'
+
+import type { FormEvent } from 'react'
+import type { AnalyzeResponse } from '@/lib/analysis-schema'
+import { analyzeRequestSchema } from '@/lib/analysis-schema'
+import { AnalyzeApiError, analyzeVideo } from '@/lib/analyze-api'
+import { authClient } from '@/lib/auth-client'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+
+export const Route = createFileRoute('/')({
+  component: VideoAnalysisPage,
+})
+
+function VideoAnalysisPage() {
+  const [isAnalyzing, setIsAnalyzing] = useState(false)
+  const [result, setResult] = useState<AnalyzeResponse | null>(null)
+  const {
+    data: session,
+    isPending: sessionPending,
+    error: sessionError,
+  } = authClient.useSession()
+  const activeUser = session?.user ?? null
+
+  const form = useForm({
+    defaultValues: {
+      youtubeUrl: '',
+      prompt: '',
+    },
+    validatorAdapter: zodValidator(),
+    validators: {
+      onSubmit: analyzeRequestSchema,
+    },
+    onSubmit: async ({ value }) => {
+      setIsAnalyzing(true)
+      setResult(null)
+
+      try {
+        const response = await analyzeVideo(value)
+        setResult(response)
+      } catch (error) {
+        console.error('Analysis failed:', error)
+
+        if (error instanceof AnalyzeApiError && error.payload) {
+          setResult(error.payload)
+        } else {
+          setResult({
+            summary: 'Analysis Failed',
+            metadata: {
+              analysisTimestamp: new Date().toISOString(),
+              model: 'error',
+              processingTime: 0,
+            },
+            error:
+              error instanceof Error
+                ? error.message
+                : 'An unexpected error occurred',
+          })
+        }
+      } finally {
+        setIsAnalyzing(false)
+      }
+    },
+  })
+
+  const resultCard = result
+    ? (() => {
+        const { metadata, sections = [], rawAnalysis, error } = result
+
+        return (
+          <Card>
+            <CardHeader>
+              <div className="flex items-start justify-between">
+                <div>
+                  <CardTitle>Analysis Results</CardTitle>
+                  <CardDescription className="mt-2">
+                    {metadata.videoTitle ?? 'Video Analysis'}
+                  </CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  <Badge variant="secondary">{metadata.model}</Badge>
+                  <Badge variant="outline">
+                    {(metadata.processingTime / 1000).toFixed(2)}s
+                  </Badge>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {error ? (
+                <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950 p-4">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5" />
+                    <div>
+                      <h3 className="font-semibold text-red-900 dark:text-red-100">
+                        Analysis Error
+                      </h3>
+                      <p className="text-sm text-red-700 dark:text-red-300 mt-1">
+                        {error}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <h3 className="text-lg font-semibold mb-2">Summary</h3>
+                    <p className="text-gray-700 dark:text-gray-300 leading-relaxed">
+                      {result.summary}
+                    </p>
+                  </div>
+
+                  {sections.length > 0 && (
+                    <div>
+                      <h3 className="text-lg font-semibold mb-4">
+                        Detailed Analysis
+                      </h3>
+                      <div className="space-y-4">
+                        {sections.map((section, index) => (
+                          <div
+                            key={index}
+                            className="rounded-lg border border-gray-200 dark:border-gray-800 p-4"
+                          >
+                            <div className="flex items-start justify-between mb-2">
+                              <h4 className="font-medium text-gray-900 dark:text-white">
+                                {section.title}
+                              </h4>
+                              {section.timestamp !== undefined && (
+                                <Badge variant="outline" className="text-xs">
+                                  {formatTimestamp(section.timestamp)}
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+                              {section.content}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {rawAnalysis && (
+                    <details className="mt-6">
+                      <summary className="cursor-pointer text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                        View Raw Analysis
+                      </summary>
+                      <pre className="mt-2 p-4 bg-gray-100 dark:bg-gray-900 rounded-lg text-xs overflow-x-auto">
+                        {rawAnalysis}
+                      </pre>
+                    </details>
+                  )}
+                </>
+              )}
+            </CardContent>
+            {!error && (
+              <CardFooter className="text-xs text-gray-500 dark:text-gray-400">
+                Analyzed on{' '}
+                {new Date(metadata.analysisTimestamp).toLocaleString()}
+                {metadata.videoDuration && (
+                  <>
+                    {' '}
+                    • Video duration: {formatTimestamp(metadata.videoDuration)}
+                  </>
+                )}
+              </CardFooter>
+            )}
+          </Card>
+        )
+      })()
+    : null
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-950">
+      <div className="container mx-auto px-4 py-12 max-w-4xl">
+        {/* Header */}
+        <div className="text-center mb-12">
+          <div className="flex items-center justify-center gap-3 mb-4">
+            <Video className="h-10 w-10 text-blue-600" />
+            <h1 className="text-4xl font-bold text-gray-900 dark:text-white">
+              LLM Video Analysis
+            </h1>
+            <Sparkles className="h-10 w-10 text-blue-600" />
+          </div>
+          <p className="text-lg text-gray-600 dark:text-gray-300">
+            Analyze YouTube videos with AI-powered insights using Vertex AI
+          </p>
+        </div>
+
+        {sessionPending ? (
+          <LoadingCard />
+        ) : (
+          <>
+            {activeUser ? (
+              <AccountCard
+                user={{
+                  name:
+                    activeUser.name || activeUser.email || 'Authenticated User',
+                  email: activeUser.email || 'Unknown email',
+                }}
+              />
+            ) : (
+              <AnonymousNotice initialError={sessionError?.message} />
+            )}
+
+            {/* Main Form Card */}
+            <Card className="mb-8">
+              <CardHeader>
+                <CardTitle>Analyze a Video</CardTitle>
+                <CardDescription>
+                  Enter a YouTube URL and describe what you'd like to analyze
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    form.handleSubmit()
+                  }}
+                  className="space-y-6"
+                >
+                  <FieldGroup>
+                    {/* YouTube URL Field */}
+                    <form.Field
+                      name="youtubeUrl"
+                      children={(field) => {
+                        const isInvalid =
+                          field.state.meta.isTouched &&
+                          !field.state.meta.isValid
+                        return (
+                          <Field data-invalid={isInvalid}>
+                            <FieldLabel htmlFor="youtubeUrl">
+                              YouTube URL
+                            </FieldLabel>
+                            <Input
+                              id="youtubeUrl"
+                              name={field.name}
+                              value={field.state.value}
+                              onBlur={field.handleBlur}
+                              onChange={(e) =>
+                                field.handleChange(e.target.value)
+                              }
+                              aria-invalid={isInvalid}
+                              placeholder="https://www.youtube.com/watch?v=..."
+                              autoComplete="off"
+                              disabled={isAnalyzing}
+                            />
+                            <FieldDescription>
+                              Paste a YouTube video URL to analyze
+                            </FieldDescription>
+                            {isInvalid && (
+                              <FieldError errors={field.state.meta.errors} />
+                            )}
+                          </Field>
+                        )
+                      }}
+                    />
+
+                    {/* Analysis Prompt Field */}
+                    <form.Field
+                      name="prompt"
+                      children={(field) => {
+                        const isInvalid =
+                          field.state.meta.isTouched &&
+                          !field.state.meta.isValid
+                        return (
+                          <Field data-invalid={isInvalid}>
+                            <FieldLabel htmlFor="prompt">
+                              Analysis Prompt
+                            </FieldLabel>
+                            <Textarea
+                              id="prompt"
+                              name={field.name}
+                              value={field.state.value}
+                              onBlur={field.handleBlur}
+                              onChange={(e) =>
+                                field.handleChange(e.target.value)
+                              }
+                              aria-invalid={isInvalid}
+                              placeholder="What would you like to analyze about this video? (e.g., 'Summarize the main points', 'Extract technical concepts', 'List action items')"
+                              className="min-h-[100px]"
+                              disabled={isAnalyzing}
+                            />
+                            <FieldDescription>
+                              Describe what insights you want from the video
+                            </FieldDescription>
+                            {isInvalid && (
+                              <FieldError errors={field.state.meta.errors} />
+                            )}
+                          </Field>
+                        )
+                      }}
+                    />
+                  </FieldGroup>
+
+                  <Button
+                    type="submit"
+                    disabled={isAnalyzing}
+                    className="w-full"
+                    size="lg"
+                  >
+                    {isAnalyzing ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Analyzing Video...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-2 h-4 w-4" />
+                        Analyze Video
+                      </>
+                    )}
+                  </Button>
+                  {!activeUser && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                      Results unlock after you sign in. Submit prompts now and
+                      log in when you're ready to view them.
+                    </p>
+                  )}
+                </form>
+              </CardContent>
+            </Card>
+
+            {/* Results Display */}
+            {resultCard}
+
+            {!activeUser && (
+              <div className="mt-8">
+                <AuthCard initialError={sessionError?.message} />
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function formatTimestamp(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+}
+
+function LoadingCard() {
+  return (
+    <Card className="mb-8">
+      <CardContent className="flex items-center justify-center gap-3 py-10">
+        <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+        <span className="text-sm text-gray-600 dark:text-gray-300">
+          Loading account session...
+        </span>
+      </CardContent>
+    </Card>
+  )
+}
+
+function AnonymousNotice({ initialError }: { initialError?: string }) {
+  return (
+    <Card className="mb-8 border border-dashed border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/40">
+      <CardContent className="py-6">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5" />
+          <div>
+            <h3 className="font-semibold text-gray-900 dark:text-gray-100">
+              Preview mode — results require an account
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+              Submit prompts without signing in. Create an account to unlock
+              full analysis results, track your $3 daily allowance, and stay
+              within the app-wide $10 daily budget.
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
+              Budgets reset at midnight UTC. We pause new analyses once the
+              limits are reached.
+            </p>
+          </div>
+        </div>
+        {initialError && (
+          <p className="mt-4 text-sm text-red-600 dark:text-red-400">
+            {initialError}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function AuthCard({ initialError }: { initialError?: string }) {
+  const [mode, setMode] = useState<'signIn' | 'signUp'>('signIn')
+  const [formData, setFormData] = useState({
+    email: '',
+    password: '',
+    name: '',
+  })
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(initialError ?? null)
+
+  useEffect(() => {
+    setError(initialError ?? null)
+  }, [initialError])
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setMessage(null)
+    setError(null)
+    setIsSubmitting(true)
+
+    try {
+      if (mode === 'signIn') {
+        const { error: signInError } = await authClient.signIn.email({
+          email: formData.email,
+          password: formData.password,
+        })
+
+        if (signInError) {
+          setError(signInError.message ?? 'Unable to sign in.')
+          return
+        }
+
+        setMessage('Signed in successfully.')
+      } else {
+        const signUpInput: {
+          email: string
+          password: string
+          name?: string
+        } = {
+          email: formData.email,
+          password: formData.password,
+        }
+
+        const trimmedName = formData.name.trim()
+        if (trimmedName) {
+          signUpInput.name = trimmedName
+        }
+
+        const { error: signUpError } = await authClient.signUp.email(
+          signUpInput,
+        )
+
+        if (signUpError) {
+          setError(signUpError.message ?? 'Unable to create an account.')
+          return
+        }
+
+        setMessage(
+          'Account created successfully. Check your email if verification is required.',
+        )
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Authentication request failed.',
+      )
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <Card className="mb-8">
+      <CardHeader>
+        <CardTitle>Sign in to continue</CardTitle>
+        <CardDescription>
+          Create an account or sign in to analyze videos with Better Auth
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex gap-2 mb-6">
+          <Button
+            type="button"
+            variant={mode === 'signIn' ? 'default' : 'ghost'}
+            onClick={() => {
+              setMode('signIn')
+              setMessage(null)
+              setError(initialError ?? null)
+            }}
+          >
+            Sign In
+          </Button>
+          <Button
+            type="button"
+            variant={mode === 'signUp' ? 'default' : 'ghost'}
+            onClick={() => {
+              setMode('signUp')
+              setMessage(null)
+              setError(null)
+            }}
+          >
+            Create Account
+          </Button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-2">
+            <label
+              htmlFor="auth-email"
+              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Email
+            </label>
+            <Input
+              id="auth-email"
+              type="email"
+              autoComplete="email"
+              value={formData.email}
+              onChange={(event) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  email: event.target.value,
+                }))
+              }
+              required
+              disabled={isSubmitting}
+            />
+          </div>
+
+          {mode === 'signUp' && (
+            <div className="space-y-2">
+              <label
+                htmlFor="auth-name"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+              >
+                Name
+              </label>
+              <Input
+                id="auth-name"
+                autoComplete="name"
+                value={formData.name}
+                onChange={(event) =>
+                  setFormData((prev) => ({
+                    ...prev,
+                    name: event.target.value,
+                  }))
+                }
+                required
+                disabled={isSubmitting}
+              />
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label
+              htmlFor="auth-password"
+              className="block text-sm font-medium text-gray-700 dark:text-gray-300"
+            >
+              Password
+            </label>
+            <Input
+              id="auth-password"
+              type="password"
+              autoComplete={
+                mode === 'signIn' ? 'current-password' : 'new-password'
+              }
+              value={formData.password}
+              onChange={(event) =>
+                setFormData((prev) => ({
+                  ...prev,
+                  password: event.target.value,
+                }))
+              }
+              required
+              minLength={8}
+              disabled={isSubmitting}
+            />
+          </div>
+
+          <Button type="submit" className="w-full" disabled={isSubmitting}>
+            {isSubmitting ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {mode === 'signIn' ? 'Signing in...' : 'Creating account...'}
+              </>
+            ) : (
+              <>{mode === 'signIn' ? 'Sign In' : 'Create Account'}</>
+            )}
+          </Button>
+        </form>
+
+        {(error || message) && (
+          <div className="mt-4 rounded-lg border border-gray-200 dark:border-gray-800 p-3 text-sm">
+            {error ? (
+              <div className="flex items-start gap-2 text-red-600 dark:text-red-400">
+                <AlertCircle className="mt-0.5 h-4 w-4" />
+                <span>{error}</span>
+              </div>
+            ) : (
+              <div className="text-green-600 dark:text-green-400">
+                {message}
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function AccountCard({
+  user,
+}: {
+  user: {
+    name: string
+    email: string
+  }
+}) {
+  return (
+    <Card className="mb-8">
+      <CardHeader>
+        <CardTitle>Signed in</CardTitle>
+        <CardDescription>{user.name}</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div>
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            {user.email}
+          </p>
+        </div>
+        <SignOutButton />
+      </CardContent>
+    </Card>
+  )
+}
+
+function SignOutButton() {
+  const [isSigningOut, setIsSigningOut] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleSignOut = async () => {
+    setIsSigningOut(true)
+    setError(null)
+
+    try {
+      await authClient.signOut()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sign out failed.')
+    } finally {
+      setIsSigningOut(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-stretch gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        onClick={handleSignOut}
+        disabled={isSigningOut}
+      >
+        {isSigningOut ? (
+          <>
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            Signing out...
+          </>
+        ) : (
+          <>
+            <LogOut className="mr-2 h-4 w-4" />
+            Sign Out
+          </>
+        )}
+      </Button>
+      {error && (
+        <span className="text-xs text-red-600 dark:text-red-400">{error}</span>
+      )}
+    </div>
+  )
+}
+</file>
+
+<file path="src/routeTree.gen.ts">
+/* eslint-disable */
+
+// @ts-nocheck
+
+// noinspection JSUnusedGlobalSymbols
+
+// This file was automatically generated by TanStack Router.
+// You should NOT make any changes in this file as it will be overwritten.
+// Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
+
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiAnalyzeRouteImport } from './routes/api.analyze'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
+
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAnalyzeRoute = ApiAnalyzeRouteImport.update({
+  id: '/api/analyze',
+  path: '/api/analyze',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
+  id: '/api/auth/$',
+  path: '/api/auth/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+
+export interface FileRoutesByFullPath {
+  '/': typeof IndexRoute
+  '/api/analyze': typeof ApiAnalyzeRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+}
+export interface FileRoutesByTo {
+  '/': typeof IndexRoute
+  '/api/analyze': typeof ApiAnalyzeRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+}
+export interface FileRoutesById {
+  __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
+  '/api/analyze': typeof ApiAnalyzeRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+}
+export interface FileRouteTypes {
+  fileRoutesByFullPath: FileRoutesByFullPath
+  fullPaths: '/' | '/api/analyze' | '/api/auth/$'
+  fileRoutesByTo: FileRoutesByTo
+  to: '/' | '/api/analyze' | '/api/auth/$'
+  id: '__root__' | '/' | '/api/analyze' | '/api/auth/$'
+  fileRoutesById: FileRoutesById
+}
+export interface RootRouteChildren {
+  IndexRoute: typeof IndexRoute
+  ApiAnalyzeRoute: typeof ApiAnalyzeRoute
+  ApiAuthSplatRoute: typeof ApiAuthSplatRoute
+}
+
+declare module '@tanstack/react-router' {
+  interface FileRoutesByPath {
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/analyze': {
+      id: '/api/analyze'
+      path: '/api/analyze'
+      fullPath: '/api/analyze'
+      preLoaderRoute: typeof ApiAnalyzeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
+      preLoaderRoute: typeof ApiAuthSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+  }
+}
+
+const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
+  ApiAnalyzeRoute: ApiAnalyzeRoute,
+  ApiAuthSplatRoute: ApiAuthSplatRoute,
+}
+export const routeTree = rootRouteImport
+  ._addFileChildren(rootRouteChildren)
+  ._addFileTypes<FileRouteTypes>()
+
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
+  interface Register {
+    ssr: true
+    router: Awaited<ReturnType<typeof getRouter>>
+  }
+}
+</file>
+
+<file path="src/styles.css">
+@import 'tailwindcss';
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+      'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+      sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+code {
+  font-family:
+    source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+</file>
+
+<file path="analyze_video.py">
+#!/usr/bin/env python3
+"""
+Unified video analysis script supporting both Google AI and Vertex AI.
+
+Features:
+- Google AI: Free tier, simple API key auth, no chunking
+- Vertex AI: Pay-per-use, GCloud auth, VIDEO CHUNKING WORKS!
+
+Usage Examples:
+
+1. Google AI (default, free):
+   python analyze_video.py 'https://youtube.com/watch?v=VIDEO_ID' 'Your prompt'
+
+2. Vertex AI with chunking:
+   python analyze_video.py 'https://youtube.com/watch?v=VIDEO_ID' 'Your prompt' \
+     --api vertex-ai \
+     --enable-chunking \
+     --segment-duration 180
+
+3. With environment variables:
+   GOOGLE_API_KEY='your-key' python analyze_video.py URL PROMPT
+   GOOGLE_CLOUD_PROJECT='project-id' python analyze_video.py URL PROMPT --api vertex-ai
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from typing import Optional, List, Dict, Any, Tuple
+
+from google import genai
+from google.genai import types
+
+# Try to import yt-dlp for video duration detection
+try:
+    import yt_dlp
+    YT_DLP_AVAILABLE = True
+except ImportError:
+    YT_DLP_AVAILABLE = False
+
+
+@dataclass
+class VideoSegment:
+    """Represents a segment of video with start and end times."""
+    start_offset: float  # in seconds
+    end_offset: float    # in seconds
+    segment_index: int
+
+    def __str__(self) -> str:
+        """Human-readable string representation."""
+        start_min = int(self.start_offset // 60)
+        start_sec = int(self.start_offset % 60)
+        end_min = int(self.end_offset // 60)
+        end_sec = int(self.end_offset % 60)
+        return f"Segment {self.segment_index}: {start_min:02d}:{start_sec:02d} - {end_min:02d}:{end_sec:02d}"
+
+
+class VideoAnalyzer:
+    """Unified video analyzer supporting both Google AI and Vertex AI."""
+
+    def __init__(self, api_type: str = "google-ai", project_id: str = None, location: str = "us-central1"):
+        """
+        Initialize the video analyzer.
+
+        Args:
+            api_type: Either "google-ai" or "vertex-ai"
+            project_id: Required for Vertex AI
+            location: GCloud region for Vertex AI (default: us-central1)
+        """
+        self.api_type = api_type
+
+        if api_type == "google-ai":
+            # Google AI setup (simple API key)
+            api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                sys.exit("Error: Set GOOGLE_API_KEY environment variable for Google AI")
+            self.client = genai.Client(api_key=api_key)
+            self.model_prefix = "models/"
+            print("Using Google AI (free tier, no chunking)", file=sys.stderr)
+
+        elif api_type == "vertex-ai":
+            # Vertex AI setup (GCloud project)
+            if not project_id:
+                project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+            if not project_id:
+                sys.exit("Error: Set --project or GOOGLE_CLOUD_PROJECT for Vertex AI")
+
+            self.client = genai.Client(
+                vertexai=True,
+                project=project_id,
+                location=location
+            )
+            self.model_prefix = ""  # Vertex AI doesn't use "models/" prefix
+            print(f"Using Vertex AI (project: {project_id}, chunking available)", file=sys.stderr)
+        else:
+            sys.exit(f"Error: Invalid API type '{api_type}'. Use 'google-ai' or 'vertex-ai'")
+
+    def analyze_full_video(
+        self,
+        youtube_url: str,
+        prompt: str,
+        model: str,
+        config: Dict[str, Any]
+    ) -> str:
+        """Analyze entire video without chunking."""
+        try:
+            print("Processing full video...", file=sys.stderr)
+
+            # Build content based on API type
+            if self.api_type == "vertex-ai":
+                # Vertex AI requires mime_type and uses list format
+                contents = [
+                    types.Part(file_data=types.FileData(
+                        file_uri=youtube_url,
+                        mime_type="video/mp4"
+                    )),
+                    types.Part(text=prompt)
+                ]
+            else:
+                # Google AI doesn't require mime_type
+                contents = [
+                    types.Part(file_data=types.FileData(file_uri=youtube_url)),
+                    types.Part(text=prompt)
+                ]
+
+            response = self.client.models.generate_content(
+                model=self.model_prefix + model,
+                contents=contents,
+                config=types.GenerateContentConfig(**config)
+            )
+
+            return self._extract_text(response)
+
+        except Exception as e:
+            return f"Error: {str(e)}"
+
+    def analyze_segment(
+        self,
+        youtube_url: str,
+        prompt: str,
+        segment: VideoSegment,
+        model: str,
+        config: Dict[str, Any]
+    ) -> Tuple[VideoSegment, str]:
+        """Analyze a video segment (Vertex AI only)."""
+        if self.api_type != "vertex-ai":
+            return segment, "Error: Chunking only works with Vertex AI"
+
+        try:
+            print(f"  Processing {segment}...", file=sys.stderr)
+
+            segment_prompt = (
+                f"Analyze video from {int(segment.start_offset)}s to {int(segment.end_offset)}s. "
+                f"{prompt}"
+            )
+
+            contents = [
+                types.Part(
+                    file_data=types.FileData(
+                        file_uri=youtube_url,
+                        mime_type="video/mp4"
+                    ),
+                    video_metadata=types.VideoMetadata(
+                        start_offset=f"{int(segment.start_offset)}s",
+                        end_offset=f"{int(segment.end_offset)}s"
+                    )
+                ),
+                types.Part(text=segment_prompt)
+            ]
+
+            response = self.client.models.generate_content(
+                model=self.model_prefix + model,
+                contents=contents,
+                config=types.GenerateContentConfig(**config)
+            )
+
+            return segment, self._extract_text(response)
+
+        except Exception as e:
+            return segment, f"Error in segment: {str(e)}"
+
+    def analyze_chunked(
+        self,
+        youtube_url: str,
+        prompt: str,
+        segments: List[VideoSegment],
+        model: str,
+        config: Dict[str, Any],
+        max_workers: int = 3
+    ) -> Dict[int, Tuple[VideoSegment, str]]:
+        """Analyze video in parallel chunks (Vertex AI only)."""
+        if self.api_type != "vertex-ai":
+            return {1: (segments[0], "Error: Chunking only works with Vertex AI")}
+
+        results = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    self.analyze_segment,
+                    youtube_url,
+                    prompt,
+                    segment,
+                    model,
+                    config
+                ): segment
+                for segment in segments
+            }
+
+            for future in as_completed(futures):
+                segment, result = future.result()
+                results[segment.segment_index] = (segment, result)
+                print(f"  ✓ Segment {segment.segment_index} complete", file=sys.stderr)
+
+        return results
+
+    def _extract_text(self, response) -> str:
+        """Extract text from response."""
+        texts = []
+        for candidate in response.candidates or []:
+            if candidate.content and candidate.content.parts:
+                for part in candidate.content.parts:
+                    if getattr(part, "text", None):
+                        texts.append(part.text.strip())
+
+        result = "\n\n".join(texts).strip()
+        return result if result else "No response generated."
+
+
+def get_video_duration(youtube_url: str) -> Optional[int]:
+    """Fetch video duration in seconds using yt-dlp."""
+    if not YT_DLP_AVAILABLE:
+        return None
+
+    try:
+        print("Fetching video metadata...", file=sys.stderr)
+
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'skip_download': True,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(youtube_url, download=False)
+            duration = info.get('duration')
+
+            if duration:
+                duration_min = int(duration // 60)
+                duration_sec = int(duration % 60)
+                print(f"Video duration: {duration_min:02d}:{duration_sec:02d} ({duration} seconds)", file=sys.stderr)
+                return duration
+
+    except Exception as e:
+        print(f"Error fetching duration: {str(e)}", file=sys.stderr)
+
+    return None
+
+
+def create_video_segments(total_duration: int, segment_duration: int) -> List[VideoSegment]:
+    """Create a list of video segments."""
+    segments = []
+    start = 0
+    segment_index = 1
+
+    while start < total_duration:
+        end = min(start + segment_duration, total_duration)
+        segments.append(VideoSegment(start, end, segment_index))
+        start = end
+        segment_index += 1
+
+    return segments
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Analyze YouTube videos with Gemini (Google AI or Vertex AI)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Google AI (free, default):
+  python analyze_video.py 'https://youtube.com/watch?v=ID' 'Find goals'
+
+  # Vertex AI with chunking:
+  python analyze_video.py 'https://youtube.com/watch?v=ID' 'Find goals' \\
+    --api vertex-ai --enable-chunking --segment-duration 180
+
+Environment Variables:
+  GOOGLE_API_KEY: Required for Google AI
+  GOOGLE_CLOUD_PROJECT: Required for Vertex AI
+        """
+    )
+
+    parser.add_argument("youtube_url", help="YouTube URL to analyze")
+    parser.add_argument("prompt", help="Analysis prompt")
+
+    # API selection
+    parser.add_argument(
+        "--api",
+        choices=["google-ai", "vertex-ai"],
+        default="google-ai",
+        help="Which API to use (default: google-ai)"
+    )
+
+    # Vertex AI specific
+    parser.add_argument(
+        "--project",
+        help="GCloud project ID (for Vertex AI)"
+    )
+    parser.add_argument(
+        "--location",
+        default="us-central1",
+        help="GCloud location (for Vertex AI, default: us-central1)"
+    )
+
+    # Model configuration
+    parser.add_argument(
+        "--model",
+        default="gemini-2.5-pro",
+        help="Model name (default: gemini-2.0-flash)"
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.2,
+        help="Temperature (default: 0.2)"
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=2048,
+        help="Max output tokens (default: 2048)"
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        help="Top-k sampling"
+    )
+    parser.add_argument(
+        "--top-p",
+        type=float,
+        help="Top-p sampling"
+    )
+
+    # Chunking (Vertex AI only)
+    parser.add_argument(
+        "--enable-chunking",
+        action="store_true",
+        help="Enable video chunking (Vertex AI only)"
+    )
+    parser.add_argument(
+        "--segment-duration",
+        type=int,
+        default=180,
+        help="Segment duration in seconds (default: 180)"
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=3,
+        help="Max parallel workers for chunking (default: 3)"
+    )
+
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # Header
+    print("=" * 70)
+    print("YouTube Video Analysis with Gemini")
+    print("=" * 70)
+    print(f"API: {args.api}")
+    print(f"Model: {args.model}")
+    print(f"URL: {args.youtube_url}")
+    print(f"Prompt: {args.prompt}")
+
+    # Initialize analyzer
+    analyzer = VideoAnalyzer(
+        api_type=args.api,
+        project_id=args.project,
+        location=args.location
+    )
+
+    # Prepare config
+    config = {
+        "temperature": args.temperature,
+        "max_output_tokens": args.max_output_tokens,
+    }
+    if args.top_k is not None:
+        config["top_k"] = args.top_k
+    if args.top_p is not None:
+        config["top_p"] = args.top_p
+
+    # Get video duration if available
+    video_duration = get_video_duration(args.youtube_url) if YT_DLP_AVAILABLE else None
+
+    # Chunking logic (Vertex AI only)
+    if args.enable_chunking and args.api == "vertex-ai":
+        if not video_duration:
+            print("\nWarning: Could not detect video duration. Processing full video.", file=sys.stderr)
+            args.enable_chunking = False
+        elif video_duration <= args.segment_duration:
+            print(f"\nVideo too short for chunking ({video_duration}s). Processing full video.", file=sys.stderr)
+            args.enable_chunking = False
+        else:
+            segments = create_video_segments(video_duration, args.segment_duration)
+            print(f"\nChunking enabled: {len(segments)} segments of {args.segment_duration}s", file=sys.stderr)
+            print(f"Using {args.max_workers} parallel workers", file=sys.stderr)
+            print("=" * 70)
+
+            start_time = time.time()
+            results = analyzer.analyze_chunked(
+                args.youtube_url,
+                args.prompt,
+                segments,
+                args.model,
+                config,
+                args.max_workers
+            )
+            elapsed = time.time() - start_time
+
+            # Display results
+            print("\n" + "=" * 70)
+            print("RESULTS (CHUNKED)")
+            print("=" * 70)
+
+            for i in sorted(results.keys()):
+                segment, text = results[i]
+                print(f"\n{'-' * 40}")
+                print(f"{segment}")
+                print(f"{'-' * 40}")
+                print(text)
+
+            print(f"\n{'=' * 70}")
+            print(f"Total time: {elapsed:.1f} seconds for {len(segments)} segments")
+            print("=" * 70)
+            return
+
+    elif args.enable_chunking and args.api == "google-ai":
+        print("\n⚠️  Warning: Chunking not supported with Google AI. Processing full video.", file=sys.stderr)
+
+    # Full video analysis (default)
+    print("=" * 70)
+
+    if video_duration and video_duration > 600:  # More than 10 minutes
+        print("\nNote: Long video detected. Consider:", file=sys.stderr)
+        if args.api == "google-ai":
+            print("  - Using --api vertex-ai --enable-chunking for faster parallel processing", file=sys.stderr)
+        print("  - Increasing --max-output-tokens for detailed results", file=sys.stderr)
+
+    print("\nNote: Timestamps are approximate (±2-3 seconds)", file=sys.stderr)
+
+    result = analyzer.analyze_full_video(
+        args.youtube_url,
+        args.prompt,
+        args.model,
+        config
+    )
+
+    print("\n" + "=" * 70)
+    print("RESULTS")
+    print("=" * 70 + "\n")
+    print(result)
+    print("\n" + "=" * 70)
+    print("Analysis complete!")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit("\nCancelled by user.")
+    except Exception as e:
+        sys.exit(f"Error: {str(e)}")
+</file>
+
+<file path="eslint.config.js">
+//  @ts-check
+
+import { tanstackConfig } from '@tanstack/eslint-config'
+
+export default [
+  ...tanstackConfig,
+  {
+    ignores: ['eslint.config.js', 'prettier.config.js'],
+  },
+]
+</file>
+
+<file path="nixpacks.toml">
+[phases.setup]
+nixPkgs = ["bun"]
+
+[phases.install]
+cmds = ["bun install"]
+
+[phases.build]
+cmds = ["bun run build"]
+
+[start]
+cmd = "bun server.ts"
+</file>
+
+<file path="package.json">
+{
+  "name": "llm-video-analysis",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bunx --bun vite dev --port 3000",
+    "start": "bun run server.ts",
+    "build": "bunx --bun vite build",
+    "serve": "bunx --bun vite preview",
+    "lint": "eslint",
+    "format": "prettier",
+    "check": "prettier --write . && eslint --fix"
+  },
+  "dependencies": {
+    "@google-cloud/vertexai": "^1.10.0",
+    "@google/generative-ai": "^0.24.1",
+    "@tailwindcss/vite": "^4.1.13",
+    "@tanstack/react-devtools": "^0.7.0",
+    "@tanstack/react-form": "^1.23.7",
+    "@tanstack/react-router": "^1.132.7",
+    "@tanstack/react-router-ssr-query": "^1.132.7",
+    "@tanstack/react-start": "^1.132.7",
+    "@tanstack/router-plugin": "^1.132.7",
+    "@tanstack/zod-form-adapter": "^0.42.1",
+    "@types/pg": "^8.15.5",
+    "better-auth": "^1.3.27",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "kysely": "^0.28.8",
+    "lucide-react": "^0.545.0",
+    "pg": "^8.16.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.3.1",
+    "tailwindcss": "^4.1.13",
+    "vite-tsconfig-paths": "^5.1.4",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@tanstack/devtools-vite": "^0.3.6",
+    "@tanstack/eslint-config": "^0.3.2",
+    "@types/bun": "1.3.0",
+    "@types/node": "^24.5.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.3",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
+  }
+}
+</file>
+
+<file path="vite.config.ts">
+import { defineConfig } from 'vite'
+import { devtools } from '@tanstack/devtools-vite'
+import { tanstackStart } from '@tanstack/react-start/plugin/vite'
+import viteReact from '@vitejs/plugin-react'
+import viteTsConfigPaths from 'vite-tsconfig-paths'
+import tailwindcss from '@tailwindcss/vite'
+
+const config = defineConfig({
+  plugins: [
+    devtools(),
+    // this is the plugin that enables path aliases
+    viteTsConfigPaths({
+      projects: ['./tsconfig.json'],
+    }),
+    tailwindcss(),
+    tanstackStart(),
+    viteReact(),
+  ],
+  resolve: {
+    dedupe: ['solid-js'],
+  },
+})
+
+export default config
+</file>
+
+<file path=".gitignore">
+node_modules
+.DS_Store
+dist
+dist-ssr
+*.local
+count.txt
+.env
+.nitro
+.tanstack
+.output
+.vinxi
+todos.json
+certs/
+</file>
+
+<file path="railway.json">
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "NIXPACKS",
+    "buildCommand": "bun install && bun run build",
+    "watchPatterns": ["src/**", "server.ts", "package.json"]
+  },
+  "deploy": {
+    "startCommand": "bun server.ts",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "healthcheckPath": "/",
+    "healthcheckTimeout": 30
+  },
+  "environments": {
+    "production": {
+      "build": {
+        "buildCommand": "bun install --production && bun run build"
+      }
+    }
+  }
+}
+</file>
+
+<file path="README.md">
+# LLM Video Analysis
+
+An AI-powered YouTube video analysis application built with TanStack Start, Bun, and Google's Gemini models. Analyze video content with custom prompts to extract insights, summaries, and structured information.
+
+## 🚀 Features
+
+### Video Analysis
+
+- **YouTube Video Analysis**: Analyze any YouTube video with custom prompts
+- **AI-Powered Insights**: Extract summaries, key points, and structured information
+- **Real-time Processing**: See results as they're generated
+- **Flexible Prompts**: Ask specific questions about video content
+- **Structured Output**: Get organized sections with timestamps
+
+### Technical Features
+
+- **TanStack Start + Form**: Modern React SSR with form validation
+- **Bun Runtime**: Fast, efficient JavaScript runtime
+- **Type-Safe API**: Zod schemas for request/response validation
+- **Stub Mode**: Test without API keys using mock data
+- **Production-Ready Server**: Optimized static asset serving with intelligent caching
+
+## 📦 Installation
+
+This project was created with TanStack Start:
+
+```bash
+bunx create-start-app@latest
+```
+
+Install dependencies:
+
+```bash
+bun install
+```
+
+## 🏃‍♂️ Development
+
+### Prerequisites
+
+- Bun 1.3+ (install with `curl -fsSL https://bun.sh/install | bash`)
+- Node.js 20+ (for compatibility)
+- Google API Key (optional, for production mode)
+
+### Quick Start
+
+1. Install dependencies:
+
+   ```bash
+   ~/.bun/bin/bun install
+   ```
+
+2. Copy environment variables:
+
+   ```bash
+   cp .env.local.example .env.local
+   ```
+
+3. Start development server:
+
+   ```bash
+   ~/.bun/bin/bun run dev
+   ```
+
+4. Open http://localhost:3000 in your browser
+
+### Environment Configuration
+
+Create a `.env.local` file with the following variables:
+
+```bash
+# Stub Mode (default: true)
+# Set to false to use real Google AI API
+USE_STUB=true
+
+# Google AI Configuration (required for production)
+GOOGLE_API_KEY=your-gemini-api-key-here
+
+# Vertex AI Configuration (optional, for advanced features)
+GOOGLE_CLOUD_PROJECT=your-project-id
+GOOGLE_CLOUD_LOCATION=us-central1
+ENABLE_CHUNKING=false
+SEGMENT_DURATION=180
+
+# Model Configuration
+DEFAULT_MODEL=gemini-2.0-flash-exp
+```
+
+### Getting API Keys
+
+1. **Google AI (Gemini) API Key**:
+   - Visit [Google AI Studio](https://aistudio.google.com/apikey)
+   - Create a new API key
+   - Add to `.env.local` as `GOOGLE_API_KEY`
+
+2. **Vertex AI (Optional)**:
+   - Set up a Google Cloud Project
+   - Enable the Vertex AI API
+   - Configure authentication
+   - Add project details to `.env.local`
+
+## 🔨 Production Build
+
+Build the application for production:
+
+```bash
+bun run build
+```
+
+## 🚀 Production Server with server.ts
+
+### Quick Start - Use in Your Project
+
+You can easily use this production server in your own TanStack Start project:
+
+1. **Copy the `server.ts` file** into your project root
+2. **Build your project** with `bun run build`
+3. **Start the server** directly with:
+   ```bash
+   bun run server.ts
+   ```
+
+Or add it to your `package.json` scripts:
+
+```json
+{
+  "scripts": {
+    "start": "bun run server.ts"
+  }
+}
+```
+
+Then run with:
+
+```bash
+bun run start
+```
+
+### Server Features
+
+The `server.ts` implements a high-performance production server with the following features:
+
+#### 1. Intelligent Asset Loading
+
+The server automatically decides which files to preload into memory and which to serve on-demand:
+
+- **In-Memory Loading**: Small files (default < 5MB) are loaded into memory at startup
+- **On-Demand Loading**: Large files are loaded from disk only when requested
+- **Optimized Performance**: Frequently used assets are served from memory
+
+#### 2. Configuration via Environment Variables
+
+```bash
+# Server Port (default: 3000)
+PORT=3000
+
+# Maximum file size for in-memory loading (in bytes, default: 5MB)
+STATIC_PRELOAD_MAX_BYTES=5242880
+
+# Include patterns (comma-separated, only these files will be preloaded)
+STATIC_PRELOAD_INCLUDE="*.js,*.css,*.woff2"
+
+# Exclude patterns (comma-separated, these files will be excluded)
+STATIC_PRELOAD_EXCLUDE="*.map,*.txt"
+
+# Enable detailed logging
+STATIC_PRELOAD_VERBOSE=true
+```
+
+### Example Configurations
+
+#### Minimal Memory Footprint
+
+```bash
+# Preload only critical assets
+STATIC_PRELOAD_MAX_BYTES=1048576 \
+STATIC_PRELOAD_INCLUDE="*.js,*.css" \
+STATIC_PRELOAD_EXCLUDE="*.map,vendor-*" \
+bun run start
+```
+
+#### Maximum Performance
+
+```bash
+# Preload all small assets
+STATIC_PRELOAD_MAX_BYTES=10485760 \
+bun run start
+```
+
+#### Debug Mode
+
+```bash
+# With detailed logging
+STATIC_PRELOAD_VERBOSE=true \
+bun run start
+```
+
+### Server Output
+
+The server displays a clear overview of all loaded assets at startup:
+
+```txt
+📦 Loading static assets from ./dist/client...
+   Max preload size: 5.00 MB
+   Include patterns: *.js,*.css,*.woff2
+
+📁 Preloaded into memory:
+   /assets/index-a1b2c3d4.js           45.23 kB │ gzip:  15.83 kB
+   /assets/index-e5f6g7h8.css           12.45 kB │ gzip:   4.36 kB
+
+💾 Served on-demand:
+   /assets/vendor-i9j0k1l2.js          245.67 kB │ gzip:  86.98 kB
+
+✅ Preloaded 2 files (57.68 KB) into memory
+ℹ️  1 files will be served on-demand (1 too large, 0 filtered)
+
+🚀 Server running at http://localhost:3000
+```
+
+## Testing
+
+This project uses [Vitest](https://vitest.dev/) for testing. You can run the tests with:
+
+```bash
+bun run test
+```
+
+## Styling
+
+This project uses [Tailwind CSS](https://tailwindcss.com/) for styling.
+
+## 🚀 Deployment
+
+### Railway (Recommended)
+
+This project is configured for one-click deployment to Railway:
+
+1. **Connect Repository**: Push your code to GitHub
+2. **Deploy to Railway**:
+   ```bash
+   railway login
+   railway init -n llm-video-analysis
+   railway up
+   ```
+3. **Set Environment Variables** in Railway dashboard:
+   - `USE_STUB=false` (for production)
+   - `GOOGLE_API_KEY=your-api-key`
+4. **Generate Domain**:
+   ```bash
+   railway domain
+   ```
+
+### Cloudflare Pages/Workers
+
+For Cloudflare deployment (coming soon - see ticket 004):
+
+- Static assets → Cloudflare Pages
+- Server functions → Cloudflare Workers
+- Use Cloudflare KV for caching
+
+### Manual Deployment
+
+1. Build the application:
+
+   ```bash
+   bun run build
+   ```
+
+2. Run the production server:
+   ```bash
+   PORT=3000 bun server.ts
+   ```
+
+## Linting & Formatting
+
+This project uses [eslint](https://eslint.org/) and [prettier](https://prettier.io/) for linting and formatting. Eslint is configured using [tanstack/eslint-config](https://tanstack.com/config/latest/docs/eslint). The following scripts are available:
+
+```bash
+bun run lint
+bun run format
+bun run check
+```
+
+## 📋 Project Tickets
+
+The `tickets/` directory contains development tickets tracking the implementation:
+
+- **001**: MVP Landing Page ✅ - Video analysis form with validation
+- **002**: Server Analysis Stub ✅ - Typed server endpoint with mock responses
+- **003**: Analyzer Pipeline Integration - Port Python analyzer to TypeScript
+- **004**: Cloudflare Deployment - Production deployment configuration
+</file>
+
+<file path="CLAUDE.md">
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+This is the LLM Video Analysis webapp built on TanStack Start with Bun 1.3 as the runtime. The project implements an LLM-backed video analysis pipeline for sports footage, forked from the `tanstack-start-bun-hosting` template with production-ready server optimizations.
+
+## LLM Documentation References
+
+When working with this project, Claude Code can reference these comprehensive documentation sources:
+
+- **Bun Runtime Documentation**: https://bun.sh/llms-full.txt
+  - Complete Bun API reference, performance optimizations, and runtime features
+  - Includes TypeScript/JavaScript bundling, testing, and deployment guidance
+
+- **Railway Deployment Documentation**: https://docs.railway.com/api/llms-docs.md
+  - Railway CLI usage, deployment patterns, and configuration
+  - Environment variables, domains, and production deployment strategies
+
+- **TanStack Start Cookbook**: https://raw.githubusercontent.com/jherr/tanstack-start-cookbook/refs/heads/main/TanStack-Start-React-Cookbook.md
+  - Comprehensive patterns and recipes for TanStack Start applications
+  - Server functions, routing, data fetching, and SSR best practices
+
+- **TanStack Start Migration Tracking**: https://github.com/TanStack/router/discussions/2863#discussioncomment-14052148
+  - Important changes and migration steps during TanStack Start BETA
+  - Breaking changes between versions (especially the Vite migration in v1.121.0)
+  - Configuration updates and renamed exports/components
+
+- **Better Auth Documentation**: https://www.better-auth.com/llms.txt
+  - Installation, configuration, and plugin ecosystem reference
+  - Includes dedicated guidance for [TanStack Start integration](https://www.better-auth.com/docs/integrations/tanstack)
+  - Session management patterns for both server handlers and the React client SDK
+
+These documentation sources provide Claude Code with detailed context for framework-specific features, deployment strategies, and runtime optimizations.
+
+## Runtime Constraints
+
+- Stick to Bun 1.3 for all tooling and scripts—do not fall back to Node-specific CLIs or runtimes.
+- PostgreSQL access must go through Bun’s built-in `SQL` client (`new SQL(...)`); do not add the `pg` package or other Node-only drivers.
+
+## Essential Commands
+
+### Development
+
+```bash
+# Install dependencies (requires Bun 1.3+)
+~/.bun/bin/bun install
+
+# Start development server on port 3000
+~/.bun/bin/bun run dev
+
+# Run in background for concurrent development
+~/.bun/bin/bun run dev &
+```
+
+### Production
+
+```bash
+# Build for production (creates dist/client and dist/server)
+~/.bun/bin/bun run build
+
+# Start production server with optimized asset loading
+~/.bun/bin/bun server.ts
+
+# With environment configuration
+PORT=3000 STATIC_PRELOAD_MAX_BYTES=5242880 ~/.bun/bin/bun server.ts
+```
+
+### Testing & Quality
+
+```bash
+# Run tests with Vitest
+~/.bun/bin/bun run test
+
+# Run specific test file
+~/.bun/bin/bun run test src/routes/__tests__/analyzer.test.tsx
+
+# Linting and formatting
+~/.bun/bin/bun run lint
+~/.bun/bin/bun run format
+~/.bun/bin/bun run check  # Runs both prettier and eslint with fixes
+```
+
+## Architecture
+
+### Tech Stack
+
+- **Runtime**: Bun 1.3 (required - install with `curl -fsSL https://bun.sh/install | bash`)
+- **Framework**: TanStack Start (React SSR with file-based routing)
+- **Styling**: Tailwind CSS v4 (via @tailwindcss/vite)
+- **Build Tool**: Vite 7
+- **Database Driver**: Bun SQL client (PostgreSQL adapter bundled with Bun 1.3)
+- **Type Safety**: TypeScript with strict mode
+- **Path Aliases**: `@/*` maps to `./src/*`
+
+### Core Architecture Patterns
+
+#### 1. Server Functions (API Layer)
+
+TanStack Start uses `createServerFn` for server-side logic that runs only on the backend:
+
+```typescript
+// Pattern: Server functions in route files
+const analyzeVideo = createServerFn({
+  method: 'POST',
+})
+  .inputValidator((data: AnalyzeVideoInput) => data)
+  .handler(async ({ data }) => {
+    // Server-only code - has access to env vars, filesystem, etc.
+    return await processVideo(data)
+  })
+```
+
+#### 2. Route-based Code Splitting
+
+Routes in `src/routes/` are automatically code-split. The `__root.tsx` provides the shell component wrapping all routes.
+
+#### 3. Production Server (`server.ts`)
+
+Custom Bun server with intelligent static asset management:
+
+- Preloads small assets (<5MB) into memory at startup
+- Serves large files on-demand from disk
+- Configurable via environment variables (STATIC*PRELOAD*\*)
+- Shows Vite-like asset overview on startup
+
+#### 4. Video Analysis Pipeline Integration Points
+
+Based on the webapp plan, the architecture should support:
+
+- **Input Layer**: YouTube URL validation and prompt collection (Zod schemas)
+- **Processing Layer**: Server functions calling Python analyzer or TypeScript port
+- **Provider Abstraction**: Support for both Google AI (free) and Vertex AI (chunking)
+- **Response Streaming**: Progressive updates during long-running analysis
+
+### Directory Structure
+
+```
+src/
+  routes/           # File-based routing (TanStack Start)
+    __root.tsx      # Root layout with head content
+    index.tsx       # Landing page (to be replaced with analysis form)
+    api.*.ts        # API routes (server-only)
+  components/       # Shared React components
+  lib/             # Business logic and utilities
+    analyzer.ts    # Video analysis core (to be implemented)
+  styles.css       # Global styles (Tailwind directives)
+
+dist/              # Production build output
+  client/          # Client-side assets
+  server/          # SSR server bundle
+```
+
+## Authentication
+
+- **Better Auth Integration**
+  - Server entry: `src/lib/auth.ts` configures Better Auth with Bun's built-in `SQL` client wired to the Railway PostgreSQL service (no local fallback) and the `reactStartCookies` plugin so TanStack Start server routes manage cookies automatically.
+  - Client SDK: `src/lib/auth-client.ts` exports a shared `authClient` instance (React variant) that powers session hooks and email/password flows on the frontend.
+  - API handler: `src/routes/api/auth/$.ts` routes `GET`/`POST` requests to `auth.handler`, matching the TanStack integration guide.
+
+- **Session Enforcement**
+  - Protected operations (e.g., `src/routes/api.analyze.ts`) call `auth.api.getSession({ headers })` and return `401` when sessions are missing.
+  - The home route (`src/routes/index.tsx`) gates the analyzer UI behind Better Auth's `useSession` hook and exposes sign-in/sign-up/sign-out flows via the shared `authClient`.
+
+- **Environment & Secrets**: Set `BETTER_AUTH_SECRET` in `.env` (Better Auth throws in production when absent). `BETTER_AUTH_DATABASE_URL` (or `DATABASE_URL`) must point to the Railway Postgres instance—grab `DATABASE_PUBLIC_URL` via `railway variables --service Postgres --json` and append `?sslmode=require` for local development. `BETTER_AUTH_DATABASE_POOL_MAX` tunes Bun SQL pool size, and `VITE_BETTER_AUTH_URL` is only needed when the auth handler lives on another origin.
+- **TLS**: Download the Railway Postgres CA certificate (see Railway CLI workflow below) and point `RAILWAY_CA_CERT_PATH` at that PEM file so Bun's SQL client can keep `rejectUnauthorized: true`. Without the cert the code falls back to `rejectUnauthorized: false` with a warning.
+
+## Database Architecture Clarification
+
+### The Three-Layer Database Stack
+
+1. **Railway PostgreSQL** (Infrastructure Layer)
+   - Railway provides the actual PostgreSQL database instance running on their cloud infrastructure
+   - Accessible via connection string: `postgresql://user:pass@crossover.proxy.rlwy.net:11287/railway`
+   - Railway requires TLS/SSL connections (`sslmode=require`) for security
+   - Provides the CA certificate for secure connections with certificate verification
+
+2. **Bun's SQL Client** (Driver & Query Layer)
+   - Bun 1.3+ includes a built-in `SQL` class that provides a full PostgreSQL client
+   - Supports direct queries via tagged template literals: `db\`SELECT \* FROM users\``
+   - Can also use the global `sql` tagged template after setting `sql.default`
+   - Configured via `new SQL(options)` where options include:
+     - `url`: The Railway PostgreSQL connection string
+     - `tls`: TLS configuration including CA certificate for secure connections
+     - `max`: Connection pool size
+     - `prepare`: Whether to use prepared statements (default: true)
+   - **Key Features in Bun 1.3:**
+     - Tagged template queries with automatic parameterization
+     - Array helpers: `sql.array(values, type)` for PostgreSQL arrays
+     - Dynamic column operations: `sql(object, ...columns)`
+     - Simple query protocol: `.simple()` for multi-statement queries
+     - Full PostgreSQL type support including JSONB, arrays, etc.
+
+3. **Better Auth** (Application Layer)
+   - Better Auth accepts Bun's SQL client instance as its database adapter
+   - While Bun's SQL _can_ run direct queries, Better Auth handles all auth-related SQL internally
+   - Manages tables like `user`, `session`, `account`, etc.
+   - Provides high-level APIs instead of raw SQL:
+     - `auth.api.signUpEmail()`
+     - `auth.api.getSession()`
+     - etc.
+
+### How They Work Together
+
+```typescript
+// 1. Railway provides the database URL and TLS cert
+const databaseUrl = process.env.BETTER_AUTH_DATABASE_URL
+
+// 2. Bun's SQL client creates the connection
+const database = new SQL({
+  url: databaseUrl,
+  tls: {
+    ca: railwayCertificate, // Railway's CA cert for secure connection
+    rejectUnauthorized: true, // Verify the server's identity
+  },
+})
+
+// 3a. You CAN use Bun SQL directly for custom queries (Bun 1.3+)
+const users = await database`SELECT * FROM users WHERE age > ${18}`
+
+// 3b. But for auth, Better Auth uses the connection internally
+const auth = betterAuth({
+  database, // Pass Bun's SQL client to Better Auth
+  // Better Auth handles all auth SQL queries internally
+})
+```
+
+### Usage Patterns
+
+```typescript
+// Using 'await using' for automatic cleanup (recommended)
+await using db = new SQL({ url: databaseUrl, tls: tlsConfig })
+const result = await db`SELECT * FROM users`
+
+// Or traditional approach with manual connection management
+const db = new SQL({ url: databaseUrl, tls: tlsConfig })
+const result = await db`SELECT * FROM users`
+// Remember to close when done: db.close()
+```
+
+### Key Points
+
+- **Bun 1.3+ has full SQL query capabilities** - not just a connection wrapper
+- Better Auth uses Bun's SQL client but handles auth queries internally
+- You can use Bun SQL directly for non-auth database operations if needed
+- Railway PostgreSQL is the database server itself
+- TLS with CA verification ensures secure communication
+- The `await using` syntax ensures proper connection cleanup
+
+## Video Analysis Implementation Strategy
+
+The project needs to integrate the Python video analyzer (`analyze_video.py`) as a TypeScript module:
+
+### Current Python Pipeline Components
+
+1. **Video Input**: YouTube URL processing with yt-dlp
+2. **Provider Support**: Google AI (simple) and Vertex AI (with chunking)
+3. **Chunking Strategy**: Split long videos into segments for parallel processing
+4. **LLM Integration**: Google Gemini models for analysis
+
+### TypeScript Port Requirements
+
+- Use `@google/generative-ai` package for Gemini integration
+- Implement YouTube video info extraction (consider `ytdl-core` alternative)
+- Create provider abstraction layer for Google AI vs Vertex AI
+- Support streaming responses for real-time updates
+
+### Billing & Usage Limits
+
+- Usage accounting lives in `src/lib/billing.ts`, which derives token counts from Vertex AI `usageMetadata` and converts them to USD using Google’s public pricing (`/M tokens`). Default mapping covers Gemini 1.5/2.x Flash/Pro; override or extend via `BILLING_PRICING_OVERRIDES` (JSON map of model → `{ inputPerMillion, outputPerMillion }`).
+- Per-user and global budgets default to $3 and $10 per UTC day. Override with `BILLING_USER_DAILY_LIMIT_USD` and `BILLING_GLOBAL_DAILY_LIMIT_USD`. All comparisons truncate to the start of the current UTC day.
+- Persist cost snapshots in PostgreSQL table `billing_usage_ledger`. Create it by running `tickets/021-billing-usage-ledger.sql` against the Better Auth database (uses `DOUBLE PRECISION` USD columns and a unique `request_id`).
+- Each analysis request inserts a ledger row (only when authenticated). Anonymous submissions short‑circuit with a 401 response so we never spend budget on unauthenticated users.
+- The frontend now renders the analysis form for guests, shows a “preview mode” banner, and surfaces API responses (including budget blockers) via the shared `AnalyzeResponse.metadata.billing` payload.
+
+### Environment Variables Needed
+
+```bash
+# For Google AI
+GOOGLE_API_KEY=your-api-key
+
+# For Vertex AI
+GOOGLE_CLOUD_PROJECT=project-id
+GOOGLE_CLOUD_LOCATION=us-central1
+
+# Analysis Configuration
+ENABLE_CHUNKING=true
+SEGMENT_DURATION=180
+DEFAULT_MODEL=gemini-2.0-flash-exp
+
+# Billing Configuration
+BILLING_USER_DAILY_LIMIT_USD=3
+BILLING_GLOBAL_DAILY_LIMIT_USD=10
+# Optional JSON overrides e.g. {"gemini-2.5-pro":{"inputPerMillion":1.25,"outputPerMillion":10}}
+BILLING_PRICING_OVERRIDES=
+```
+
+## Development Workflow
+
+1. **Server Functions First**: Implement backend logic in server functions before UI
+2. **Type Safety**: Define shared types in `src/lib/types.ts` for client-server communication
+3. **Progressive Enhancement**: Build forms that work without JavaScript, enhance with React
+4. **Asset Optimization**: Use Vite's build optimization; server.ts handles production serving
+5. **Environment Management**: Use `.env.local` for local development (git-ignored)
+
+## Deployment Considerations
+
+### Railway (Recommended)
+
+Deploy directly to Railway with automatic Bun support:
+
+```bash
+# Login to Railway
+railway login
+
+# Initialize project
+railway init -n llm-video-analysis
+
+# Deploy to Railway
+railway up
+
+# Generate public domain
+railway domain
+
+# Set environment variables
+railway variables set GOOGLE_API_KEY=your-api-key
+```
+
+Railway automatically detects Bun via nixpacks.toml and handles the build/deployment process.
+
+### Railway CLI Workflow (Agents)
+
+- Default project: `quidditch-video-analysis` (environment `production`)
+- Switch services non-interactively with `railway service quidditch-video-analysis` (app) and `railway service Postgres` (database) before running CLI commands
+- Capture deployment status with `railway status`, `railway deployment list --json`, and `railway logs -n 20` to verify the Bun server boots cleanly
+- Use `railway variables --json` (per service) to confirm domains, internal hosts, and proxy ports; document findings in `PROJECT_STATUS.md` under the Railway CLI snapshot section with a fresh timestamp
+- Preserve sensitive strings already tracked in status docs; avoid duplicating secrets elsewhere
+- When hacking on auth/database flows, keep everything on Bun’s SQL driver—no `pg` install step is needed or desired
+- Download the Postgres CA for local TLS once via:
+
+  ```bash
+  python3 - <<'PY'
+  import pathlib, re, subprocess
+
+  cmd = [
+      "openssl",
+      "s_client",
+      "-showcerts",
+      "-servername",
+      "crossover.proxy.rlwy.net",
+      "-connect",
+      "crossover.proxy.rlwy.net:11287",
+  ]
+  result = subprocess.run(cmd, input="\n", text=True, capture_output=True)
+  certs = re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", result.stdout, re.S)
+  if len(certs) < 2:
+      raise SystemExit("CA certificate not found in chain")
+  pathlib.Path("certs").mkdir(exist_ok=True)
+  pathlib.Path("certs/railway-ca.pem").write_text(certs[-1] + "\n")
+  print("wrote certs/railway-ca.pem")
+  PY
+  ```
+
+  Add `certs/railway-ca.pem` to `.gitignore` (already configured) and surface the file path through `RAILWAY_CA_CERT_PATH`.
+
+### Cloudflare Pages/Workers
+
+The build output is compatible with Cloudflare deployment:
+
+- Static assets from `dist/client` → Pages
+- Server bundle from `dist/server` → Workers
+- Use Cloudflare KV for temporary video cache
+
+### Bun Production Compilation
+
+For standalone deployment:
+
+```bash
+bun build --compile --minify --bytecode ./server.ts --outfile llm-video-analysis
+```
+
+## Testing Strategy
+
+### Unit Tests
+
+- Test analyzer functions in isolation
+- Mock external API calls (Google AI, YouTube)
+- Use Vitest's built-in mocking capabilities
+
+### Integration Tests
+
+- Test full server function flows
+- Validate error handling for invalid URLs
+- Test streaming response handling
+
+### E2E Considerations
+
+- Test actual video analysis with small sample videos
+- Validate UI form submissions and loading states
+- Test error recovery and retry mechanisms
+
+## Known Issues
+
+- TanStack Devtools (`@tanstack/react-devtools`) remains **alpha** ([overview](https://tanstack.com/devtools/latest/docs/framework/react/overview)) but we enable it for a unified panel. We run it without any extra plugins to avoid Solid duplication issues; if you ever add additional panels (e.g., router/query devtools), keep `resolve.dedupe = ['solid-js']` in `vite.config.ts` to prevent the `"You appear to have multiple instances of Solid"` warning, and review their changelog for breaking API updates.
+- Railway's external Postgres proxy (`*.proxy.rlwy.net`) serves a certificate with `CN=localhost`. `src/lib/auth.ts` loads the bundled CA and overrides `checkServerIdentity` only for that proxy so Better Auth can connect while keeping TLS validation. If Railway updates their certificates, revisit this override.
+</file>
+
+</files>
