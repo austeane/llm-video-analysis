@@ -79,6 +79,8 @@ RAILWAY_CA_CERT_PATH=certs/railway-ca.pem
    - Database: `Postgres`
 3. **Switch services**: `railway service <name>`
 4. **Check logs**: `railway logs`
+5. **Deployments**: Pushing to `main` triggers a Railpack build via the GitHub integration. Use `railway deployment up` only for manual hotfixes.
+6. **Build Environment**: Verify the service remains on **Railway Metal** in the Railway dashboard (Service → Settings → Build Environment).
 
 ### TLS Certificate (for local development)
 ```bash
@@ -102,7 +104,7 @@ PY
 - `src/routes/api.analyze.ts` - Video analysis API endpoint
 - `src/lib/billing.ts` - Usage tracking and cost calculation
 - `server.ts` - Production server with asset optimization
-- `nixpacks.toml` - Railway build configuration
+- `railway.json` - Railway service configuration (Railpack builder + start command)
 
 ## Development Notes
 

@@ -2,6 +2,8 @@
 
 This guide will help you deploy the LLM Video Analysis app to Railway with your Google API key.
 
+> **Current setup**: The production service is wired to the `austeane/llm-video-analysis` GitHub repo with auto-deploys on the `main` branch. Pushing to `main` builds with Railpack (Bun provider) and rolls out automatically. The service is set to Railway Metal in the dashboard, and `railway.json` pins the builder to Railpack while setting the process start command to `bun server.ts`.
+
 ## Prerequisites
 
 - Railway CLI installed (`brew install railway` on macOS)
@@ -43,15 +45,13 @@ railway variables set DEFAULT_MODEL=gemini-2.0-flash-exp
 
 ### 4. Deploy the Application
 
+For production, push to `main` and let the GitHub → Railway integration create a deployment. For ad-hoc testing you can still run:
+
 ```bash
-railway up
+railway deployment up
 ```
 
-This will:
-
-- Build your application using Bun
-- Deploy it to Railway's infrastructure
-- Automatically handle the production server
+This triggers the same Railpack build locally and uploads the artifact.
 
 ### 5. Generate Public Domain
 
@@ -105,13 +105,12 @@ railway variables remove VARIABLE_NAME
 
 ## Important Notes
 
-1. **API Key Security**: Your Google API key is stored securely in Railway's environment variables and is never exposed in your code or logs.
-
-2. **Costs**:
+1. **Railpack Configuration**: `railway.json` pins the builder to Railpack and sets the start command to `bun server.ts`. Set the service’s build environment to **Metal** from the Railway dashboard (Project → Service → Settings → Build Environment).
+2. **API Key Security**: Your Google API key is stored securely in Railway's environment variables and is never exposed in your code or logs.
+3. **Costs**:
    - Railway offers a free tier with $5/month credits
    - Google's Gemini API has free tier limits (check current limits at https://ai.google.dev/pricing)
-
-3. **Performance**: The app uses Bun for optimal performance and fast cold starts.
+4. **Performance**: The app uses Bun for optimal performance and fast cold starts.
 
 ## Troubleshooting
 
@@ -143,7 +142,6 @@ After deployment, you can:
 
 - Monitor usage in the Railway dashboard
 - Set up custom domains if needed
-- Configure auto-deployments from GitHub
-- Set up deployment notifications
+- Configure deployment notifications or preview environments
 
 Visit your Railway dashboard at https://railway.app to manage your deployment.
