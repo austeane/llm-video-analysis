@@ -32,7 +32,7 @@ Set your Google API key and other configuration:
 
 ```bash
 # Set Google API key
-railway variables set GOOGLE_API_KEY=AIzaSyDd5miKfat8yvZHjo5mZ4AhAem11VY7Ewo
+railway variables set GOOGLE_API_KEY=<YOUR_GOOGLE_API_KEY>
 
 # Set to use real API (not stub mode)
 railway variables set USE_STUB=false
@@ -128,7 +128,7 @@ To test locally with the same configuration as production:
 
 ```bash
 # Export the variables locally
-export GOOGLE_API_KEY=AIzaSyDd5miKfat8yvZHjo5mZ4AhAem11VY7Ewo
+export GOOGLE_API_KEY=<YOUR_GOOGLE_API_KEY>
 export USE_STUB=false
 export DEFAULT_MODEL=gemini-2.0-flash-exp
 

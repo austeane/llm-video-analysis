@@ -115,3 +115,5 @@ export const auth = betterAuth({
   },
   plugins: [reactStartCookies()],
 })
+
+export const authDbPool = pool

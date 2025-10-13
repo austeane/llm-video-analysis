@@ -43,7 +43,7 @@
  *   bun run server.ts
  */
 
-import { readdir } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
 // Configuration
@@ -125,6 +125,40 @@ function shouldInclude(relativePath: string): boolean {
 }
 
 /**
+ * Walk a directory tree and yield relative file paths
+ */
+async function* walkDirectory(
+  dir: string,
+  base = '',
+): AsyncGenerator<string> {
+  const entries = await readdir(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const relative = base ? `${base}/${entry.name}` : entry.name
+    const full = join(dir, entry.name)
+
+    if (entry.isDirectory()) {
+      yield* walkDirectory(full, relative)
+      continue
+    }
+
+    if (!entry.isFile()) {
+      continue
+    }
+
+    try {
+      const stats = await stat(full)
+      if (stats.isFile() && stats.size > 0) {
+        yield relative
+      }
+    } catch (error) {
+      if (VERBOSE) {
+        console.warn(`   ⚠️  Failed to stat ${relative}:`, error)
+      }
+    }
+  }
+}
+
+/**
  * Build static routes with intelligent preloading strategy
  * Small files are loaded into memory, large files are served on-demand
  */
@@ -151,10 +185,7 @@ async function buildStaticRoutes(clientDir: string): Promise<PreloadResult> {
   let totalPreloadedBytes = 0
 
   try {
-    // Read all files recursively
-    const files = await readdir(clientDir, { recursive: true })
-
-    for (const relativePath of files) {
+    for await (const relativePath of walkDirectory(clientDir)) {
       const filepath = join(clientDir, relativePath)
       const route = '/' + relativePath.replace(/\\/g, '/') // Handle Windows paths
 

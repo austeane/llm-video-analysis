@@ -37,7 +37,7 @@ These documentation sources provide Claude Code with detailed context for framew
 ## Runtime Constraints
 
 - Stick to Bun 1.3 for all tooling and scripts—do not fall back to Node-specific CLIs or runtimes.
-- PostgreSQL access must go through Bun’s built-in `SQL` client (`new SQL(...)`); do not add the `pg` package or other Node-only drivers.
+- PostgreSQL connections are centralized through the shared `pg` `Pool` exported from `src/lib/auth.ts`. Reuse `authDbPool` (e.g., via Kysely) instead of introducing Bun’s `SQL` client or additional drivers.
 
 ## Essential Commands
 
@@ -90,7 +90,7 @@ PORT=3000 STATIC_PRELOAD_MAX_BYTES=5242880 ~/.bun/bin/bun server.ts
 - **Framework**: TanStack Start (React SSR with file-based routing)
 - **Styling**: Tailwind CSS v4 (via @tailwindcss/vite)
 - **Build Tool**: Vite 7
-- **Database Driver**: Bun SQL client (PostgreSQL adapter bundled with Bun 1.3)
+- **Database Driver**: `pg` Pool shared via Kysely (`PostgresDialect`)
 - **Type Safety**: TypeScript with strict mode
 - **Path Aliases**: `@/*` maps to `./src/*`
 
@@ -155,7 +155,7 @@ dist/              # Production build output
 ## Authentication
 
 - **Better Auth Integration**
-  - Server entry: `src/lib/auth.ts` configures Better Auth with Bun's built-in `SQL` client wired to the Railway PostgreSQL service (no local fallback) and the `reactStartCookies` plugin so TanStack Start server routes manage cookies automatically.
+  - Server entry: `src/lib/auth.ts` configures Better Auth with a shared `pg` connection pool wired to the Railway PostgreSQL service (no local fallback) and the `reactStartCookies` plugin so TanStack Start server routes manage cookies automatically.
   - Client SDK: `src/lib/auth-client.ts` exports a shared `authClient` instance (React variant) that powers session hooks and email/password flows on the frontend.
   - API handler: `src/routes/api/auth/$.ts` routes `GET`/`POST` requests to `auth.handler`, matching the TanStack integration guide.
 
@@ -163,43 +163,27 @@ dist/              # Production build output
   - Protected operations (e.g., `src/routes/api.analyze.ts`) call `auth.api.getSession({ headers })` and return `401` when sessions are missing.
   - The home route (`src/routes/index.tsx`) gates the analyzer UI behind Better Auth's `useSession` hook and exposes sign-in/sign-up/sign-out flows via the shared `authClient`.
 
-- **Environment & Secrets**: Set `BETTER_AUTH_SECRET` in `.env` (Better Auth throws in production when absent). `BETTER_AUTH_DATABASE_URL` (or `DATABASE_URL`) must point to the Railway Postgres instance—grab `DATABASE_PUBLIC_URL` via `railway variables --service Postgres --json` and append `?sslmode=require` for local development. `BETTER_AUTH_DATABASE_POOL_MAX` tunes Bun SQL pool size, and `VITE_BETTER_AUTH_URL` is only needed when the auth handler lives on another origin.
-- **TLS**: Download the Railway Postgres CA certificate (see Railway CLI workflow below) and point `RAILWAY_CA_CERT_PATH` at that PEM file so Bun's SQL client can keep `rejectUnauthorized: true`. Without the cert the code falls back to `rejectUnauthorized: false` with a warning.
+- **Environment & Secrets**: Set `BETTER_AUTH_SECRET` in `.env` (Better Auth throws in production when absent). `BETTER_AUTH_DATABASE_URL` (or `DATABASE_URL`) must point to the Railway Postgres instance—grab `DATABASE_PUBLIC_URL` via `railway variables --service Postgres --json` and append `?sslmode=require` for local development. `BETTER_AUTH_DATABASE_POOL_MAX` tunes the shared `pg` pool size, and `VITE_BETTER_AUTH_URL` is only needed when the auth handler lives on another origin.
+- **TLS**: Download the Railway Postgres CA certificate (see Railway CLI workflow below) and point `RAILWAY_CA_CERT_PATH` at that PEM file so the `pg` client can keep `rejectUnauthorized: true`. Without the cert the code falls back to `rejectUnauthorized: false` with a warning.
 
 ## Database Architecture Clarification
 
 ### The Three-Layer Database Stack
 
 1. **Railway PostgreSQL** (Infrastructure Layer)
-   - Railway provides the actual PostgreSQL database instance running on their cloud infrastructure
-   - Accessible via connection string: `postgresql://user:pass@crossover.proxy.rlwy.net:11287/railway`
-   - Railway requires TLS/SSL connections (`sslmode=require`) for security
-   - Provides the CA certificate for secure connections with certificate verification
+   - Railway hosts the production database and enforces TLS (`sslmode=require`)
+   - Connection strings live in `BETTER_AUTH_DATABASE_URL` / `DATABASE_URL`
+   - Railway’s CA certificate enables full certificate verification locally
 
-2. **Bun's SQL Client** (Driver & Query Layer)
-   - Bun 1.3+ includes a built-in `SQL` class that provides a full PostgreSQL client
-   - Supports direct queries via tagged template literals: `db\`SELECT \* FROM users\``
-   - Can also use the global `sql` tagged template after setting `sql.default`
-   - Configured via `new SQL(options)` where options include:
-     - `url`: The Railway PostgreSQL connection string
-     - `tls`: TLS configuration including CA certificate for secure connections
-     - `max`: Connection pool size
-     - `prepare`: Whether to use prepared statements (default: true)
-   - **Key Features in Bun 1.3:**
-     - Tagged template queries with automatic parameterization
-     - Array helpers: `sql.array(values, type)` for PostgreSQL arrays
-     - Dynamic column operations: `sql(object, ...columns)`
-     - Simple query protocol: `.simple()` for multi-statement queries
-     - Full PostgreSQL type support including JSONB, arrays, etc.
+2. **Shared `pg` Pool** (Driver Layer)
+   - `src/lib/auth.ts` instantiates a single `Pool` from the `pg` package
+   - TLS is configured based on the connection string and Railway CA cert
+   - Pool size is controlled via `BETTER_AUTH_DATABASE_POOL_MAX` (defaults to 10)
 
-3. **Better Auth** (Application Layer)
-   - Better Auth accepts Bun's SQL client instance as its database adapter
-   - While Bun's SQL _can_ run direct queries, Better Auth handles all auth-related SQL internally
-   - Manages tables like `user`, `session`, `account`, etc.
-   - Provides high-level APIs instead of raw SQL:
-     - `auth.api.signUpEmail()`
-     - `auth.api.getSession()`
-     - etc.
+3. **Application Access (Better Auth + Kysely)** (Query Layer)
+   - Better Auth receives the pool for auth tables (`user`, `session`, etc.)
+   - `src/lib/db.ts` wraps the same pool with Kysely’s `PostgresDialect` for app tables (e.g., `billing_usage_ledger`)
+   - All downstream code should import either `auth` or `db` instead of creating new connections
 
 ### How They Work Together
 
@@ -207,46 +191,49 @@ dist/              # Production build output
 // 1. Railway provides the database URL and TLS cert
 const databaseUrl = process.env.BETTER_AUTH_DATABASE_URL
 
-// 2. Bun's SQL client creates the connection
-const database = new SQL({
-  url: databaseUrl,
-  tls: {
-    ca: railwayCertificate, // Railway's CA cert for secure connection
-    rejectUnauthorized: true, // Verify the server's identity
+// 2. Initialize a single pg Pool with TLS
+const pool = new Pool({
+  connectionString: databaseUrl,
+  ssl: {
+    ca: railwayCertificate,
+    rejectUnauthorized: true,
   },
 })
 
-// 3a. You CAN use Bun SQL directly for custom queries (Bun 1.3+)
-const users = await database`SELECT * FROM users WHERE age > ${18}`
+// 3a. Share the pool with Better Auth
+export const auth = betterAuth({
+  database: pool,
+})
 
-// 3b. But for auth, Better Auth uses the connection internally
-const auth = betterAuth({
-  database, // Pass Bun's SQL client to Better Auth
-  // Better Auth handles all auth SQL queries internally
+// 3b. Reuse the pool via Kysely for application queries
+export const db = new Kysely({
+  dialect: new PostgresDialect({ pool }),
 })
 ```
 
 ### Usage Patterns
 
 ```typescript
-// Using 'await using' for automatic cleanup (recommended)
-await using db = new SQL({ url: databaseUrl, tls: tlsConfig })
-const result = await db`SELECT * FROM users`
+// Fetch data with Kysely (reuses the shared pool automatically)
+const latestRuns = await db
+  .selectFrom('billing_usage_ledger')
+  .selectAll()
+  .orderBy('created_at', 'desc')
+  .limit(10)
+  .execute()
 
-// Or traditional approach with manual connection management
-const db = new SQL({ url: databaseUrl, tls: tlsConfig })
-const result = await db`SELECT * FROM users`
-// Remember to close when done: db.close()
+// Better Auth APIs use the same pool under the hood
+const session = await auth.api.getSession({ headers: request.headers })
 ```
 
 ### Key Points
 
-- **Bun 1.3+ has full SQL query capabilities** - not just a connection wrapper
-- Better Auth uses Bun's SQL client but handles auth queries internally
-- You can use Bun SQL directly for non-auth database operations if needed
-- Railway PostgreSQL is the database server itself
-- TLS with CA verification ensures secure communication
-- The `await using` syntax ensures proper connection cleanup
+- One pool to rule them all—do not instantiate additional drivers
+- Kysely is the preferred query builder for app tables; it already shares the pool
+- `BETTER_AUTH_DATABASE_POOL_MAX` controls pooling for both auth and app queries
+- Railway PostgreSQL expects TLS; keep `RAILWAY_CA_CERT_PATH` in sync locally
+- The shared pool ensures predictable connection counts in production
+- Close the pool (`await pool.end()`) only during graceful shutdown flows
 
 ## Video Analysis Implementation Strategy
 
@@ -266,6 +253,14 @@ The project needs to integrate the Python video analyzer (`analyze_video.py`) as
 - Create provider abstraction layer for Google AI vs Vertex AI
 - Support streaming responses for real-time updates
 
+### Billing & Usage Limits
+
+- Usage accounting lives in `src/lib/billing.ts`, which derives token counts from Vertex AI `usageMetadata` and converts them to USD using Google’s public pricing (`/M tokens`). Default mapping covers Gemini 1.5/2.x Flash/Pro; override or extend via `BILLING_PRICING_OVERRIDES` (JSON map of model → `{ inputPerMillion, outputPerMillion }`).
+- Per-user and global budgets default to $3 and $10 per UTC day. Override with `BILLING_USER_DAILY_LIMIT_USD` and `BILLING_GLOBAL_DAILY_LIMIT_USD`. All comparisons truncate to the start of the current UTC day.
+- Persist cost snapshots in PostgreSQL table `billing_usage_ledger`. Create it by running `tickets/021-billing-usage-ledger.sql` against the Better Auth database (uses `DOUBLE PRECISION` USD columns and a unique `request_id`).
+- Each analysis request inserts a ledger row (only when authenticated). Anonymous submissions short‑circuit with a 401 response so we never spend budget on unauthenticated users.
+- The frontend now renders the analysis form for guests, shows a “preview mode” banner, and surfaces API responses (including budget blockers) via the shared `AnalyzeResponse.metadata.billing` payload.
+
 ### Environment Variables Needed
 
 ```bash
@@ -280,6 +275,12 @@ GOOGLE_CLOUD_LOCATION=us-central1
 ENABLE_CHUNKING=true
 SEGMENT_DURATION=180
 DEFAULT_MODEL=gemini-2.0-flash-exp
+
+# Billing Configuration
+BILLING_USER_DAILY_LIMIT_USD=3
+BILLING_GLOBAL_DAILY_LIMIT_USD=10
+# Optional JSON overrides e.g. {"gemini-2.5-pro":{"inputPerMillion":1.25,"outputPerMillion":10}}
+BILLING_PRICING_OVERRIDES=
 ```
 
 ## Development Workflow

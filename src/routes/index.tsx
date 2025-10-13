@@ -6,9 +6,9 @@ import { zodValidator } from '@tanstack/zod-form-adapter'
 import { AlertCircle, Loader2, LogOut, Sparkles, Video } from 'lucide-react'
 
 import type { FormEvent } from 'react'
-import type { AnalyzeFormData, AnalyzeResponse } from '@/lib/analysis-schema'
+import type { AnalyzeResponse } from '@/lib/analysis-schema'
 import { analyzeRequestSchema } from '@/lib/analysis-schema'
-import { analyzeVideo } from '@/lib/analyze-api'
+import { AnalyzeApiError, analyzeVideo } from '@/lib/analyze-api'
 import { authClient } from '@/lib/auth-client'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -62,18 +62,23 @@ function VideoAnalysisPage() {
         setResult(response)
       } catch (error) {
         console.error('Analysis failed:', error)
-        setResult({
-          summary: 'Analysis Failed',
-          metadata: {
-            analysisTimestamp: new Date().toISOString(),
-            model: 'error',
-            processingTime: 0,
-          },
-          error:
-            error instanceof Error
-              ? error.message
-              : 'An unexpected error occurred',
-        })
+
+        if (error instanceof AnalyzeApiError && error.payload) {
+          setResult(error.payload)
+        } else {
+          setResult({
+            summary: 'Analysis Failed',
+            metadata: {
+              analysisTimestamp: new Date().toISOString(),
+              model: 'error',
+              processingTime: 0,
+            },
+            error:
+              error instanceof Error
+                ? error.message
+                : 'An unexpected error occurred',
+          })
+        }
       } finally {
         setIsAnalyzing(false)
       }
@@ -205,17 +210,19 @@ function VideoAnalysisPage() {
 
         {sessionPending ? (
           <LoadingCard />
-        ) : !activeUser ? (
-          <AuthCard initialError={sessionError?.message} />
         ) : (
           <>
-            <AccountCard
-              user={{
-                name:
-                  activeUser.name || activeUser.email || 'Authenticated User',
-                email: activeUser.email || 'Unknown email',
-              }}
-            />
+            {activeUser ? (
+              <AccountCard
+                user={{
+                  name:
+                    activeUser.name || activeUser.email || 'Authenticated User',
+                  email: activeUser.email || 'Unknown email',
+                }}
+              />
+            ) : (
+              <AnonymousNotice initialError={sessionError?.message} />
+            )}
 
             {/* Main Form Card */}
             <Card className="mb-8">
@@ -325,12 +332,24 @@ function VideoAnalysisPage() {
                       </>
                     )}
                   </Button>
+                  {!activeUser && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                      Sign in to run analyses. We won’t process videos until
+                      you’re authenticated.
+                    </p>
+                  )}
                 </form>
               </CardContent>
             </Card>
 
             {/* Results Display */}
             {resultCard}
+
+            {!activeUser && (
+              <div className="mt-8">
+                <AuthCard initialError={sessionError?.message} />
+              </div>
+            )}
           </>
         )}
       </div>
@@ -352,6 +371,36 @@ function LoadingCard() {
         <span className="text-sm text-gray-600 dark:text-gray-300">
           Loading account session...
         </span>
+      </CardContent>
+    </Card>
+  )
+}
+
+function AnonymousNotice({ initialError }: { initialError?: string }) {
+  return (
+    <Card className="mb-8 border border-dashed border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/40">
+      <CardContent className="py-6">
+        <div className="flex items-start gap-3">
+          <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5" />
+          <div>
+            <h3 className="font-semibold text-gray-900 dark:text-gray-100">
+              Preview mode — results require an account
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+              You must sign in to run analyses. Once signed in, you’ll see your
+              $3 daily allowance and the app-wide $10 budget.
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-3">
+              Budgets reset at midnight UTC. We pause new analyses once the
+              limits are reached.
+            </p>
+          </div>
+        </div>
+        {initialError && (
+          <p className="mt-4 text-sm text-red-600 dark:text-red-400">
+            {initialError}
+          </p>
+        )}
       </CardContent>
     </Card>
   )
@@ -386,20 +435,32 @@ function AuthCard({ initialError }: { initialError?: string }) {
         })
 
         if (signInError) {
-          setError(signInError.message)
+          setError(signInError.message ?? 'Unable to sign in.')
           return
         }
 
         setMessage('Signed in successfully.')
       } else {
-        const { error: signUpError } = await authClient.signUp.email({
+        const signUpInput: {
+          email: string
+          password: string
+          name?: string
+        } = {
           email: formData.email,
           password: formData.password,
-          name: formData.name || undefined,
-        })
+        }
+
+        const trimmedName = formData.name.trim()
+        if (trimmedName) {
+          signUpInput.name = trimmedName
+        }
+
+        const { error: signUpError } = await authClient.signUp.email(
+          signUpInput,
+        )
 
         if (signUpError) {
-          setError(signUpError.message)
+          setError(signUpError.message ?? 'Unable to create an account.')
           return
         }
 

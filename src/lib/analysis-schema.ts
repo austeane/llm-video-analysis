@@ -19,16 +19,37 @@ export const analyzeRequestSchema = z.object({
 export type AnalyzeFormData = z.infer<typeof analyzeRequestSchema>
 
 // Response schema for analysis results
+const billingMetadataSchema = z.object({
+  totalCostUsd: z.number(),
+  inputCostUsd: z.number(),
+  outputCostUsd: z.number(),
+  promptTokens: z.number().optional(),
+  completionTokens: z.number().optional(),
+  totalTokens: z.number().optional(),
+  cachedContentTokens: z.number().optional(),
+  userDailyLimitUsd: z.number().optional(),
+  globalDailyLimitUsd: z.number().optional(),
+  userDailyTotalUsd: z.number().optional(),
+  globalDailyTotalUsd: z.number().optional(),
+  isUserCapped: z.boolean().optional(),
+  isGlobalCapped: z.boolean().optional(),
+  requestId: z.string().optional(),
+})
+
 export const analyzeResponseSchema = z.object({
   summary: z.string(),
-  metadata: z.object({
-    videoTitle: z.string().optional(),
-    videoDuration: z.number().optional(), // in seconds
-    analysisTimestamp: z.string(),
-    model: z.string(),
-    processingTime: z.number(), // in milliseconds
-    analysisMode: z.enum(['direct-video', 'text-based']).optional(), // How the analysis was performed
-  }),
+  metadata: z
+    .object({
+      videoTitle: z.string().optional(),
+      videoDuration: z.number().optional(), // in seconds
+      analysisTimestamp: z.string(),
+      model: z.string(),
+      processingTime: z.number(), // in milliseconds
+      analysisMode: z.enum(['direct-video', 'text-based']).optional(), // How the analysis was performed
+    })
+    .extend({
+      billing: billingMetadataSchema.optional(),
+    }),
   sections: z
     .array(
       z.object({
@@ -43,6 +64,7 @@ export const analyzeResponseSchema = z.object({
 })
 
 export type AnalyzeResponse = z.infer<typeof analyzeResponseSchema>
+export type AnalyzeBillingMetadata = z.infer<typeof billingMetadataSchema>
 
 // Environment configuration schema - no defaults, fail if not set
 export const envSchema = z.object({

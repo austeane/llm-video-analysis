@@ -5,6 +5,18 @@
 
 import type { AnalyzeFormData, AnalyzeResponse } from './analysis-schema'
 
+export class AnalyzeApiError extends Error {
+  readonly status: number
+  readonly payload?: AnalyzeResponse
+
+  constructor(message: string, status: number, payload?: AnalyzeResponse) {
+    super(message)
+    this.name = 'AnalyzeApiError'
+    this.status = status
+    this.payload = payload
+  }
+}
+
 /**
  * Analyze video using Vertex AI - no fallbacks
  */
@@ -26,12 +38,23 @@ export async function analyzeVideo(
     }),
   })
 
+  const payload = (await response.json().catch(() => null)) as
+    | AnalyzeResponse
+    | null
+
   if (!response.ok) {
-    const error = await response.json().catch(() => null)
-    throw new Error(
-      error?.error || `API request failed with status ${response.status}`,
+    const message = payload?.error
+      ? payload.error
+      : `API request failed with status ${response.status}`
+    throw new AnalyzeApiError(message, response.status, payload ?? undefined)
+  }
+
+  if (!payload) {
+    throw new AnalyzeApiError(
+      'API returned an empty response payload.',
+      response.status,
     )
   }
 
-  return response.json()
+  return payload
 }

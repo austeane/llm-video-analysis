@@ -36,11 +36,13 @@ function RootDocument({ children }: { children: React.ReactNode }) {
       </head>
       <body>
         {children}
-        <TanStackDevtools
-          config={{
-            position: 'bottom-left',
-          }}
-        />
+        {import.meta.env.DEV ? (
+          <TanStackDevtools
+            config={{
+              position: 'bottom-left',
+            }}
+          />
+        ) : null}
         <Scripts />
       </body>
     </html>

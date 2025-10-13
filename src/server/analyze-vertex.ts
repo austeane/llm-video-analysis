@@ -10,11 +10,18 @@ import {
 } from '@google-cloud/vertexai'
 
 import type { AnalyzeFormData, AnalyzeResponse } from '@/lib/analysis-schema'
+import type { TokenUsage } from '@/lib/billing'
+import { mergeUsage, normalizeUsage } from '@/lib/billing'
 import { CONFIG, validateConfig } from '@/config'
 import { extractVideoId } from '@/lib/youtube-utils'
 
 // Validate configuration on module load
 validateConfig()
+
+export interface VertexAnalysisResult {
+  response: AnalyzeResponse
+  usage: TokenUsage | null
+}
 
 /**
  * Initialize Vertex AI client
@@ -33,7 +40,7 @@ function getVertexClient() {
  */
 export async function analyzeVideoVertex(
   data: AnalyzeFormData,
-): Promise<AnalyzeResponse> {
+): Promise<VertexAnalysisResult> {
   const startTime = Date.now()
 
   try {
@@ -60,6 +67,12 @@ export async function analyzeVideoVertex(
 
     // Extract video ID for logging
     const videoId = extractVideoId(data.youtubeUrl) || 'unknown'
+
+    if (!/^https?:\/\//i.test(data.youtubeUrl)) {
+      throw new Error(
+        'Unsupported video URI. Provide an HTTP(S) URL or upload the asset before analysis.',
+      )
+    }
 
     console.log(
       `[Vertex AI] Analyzing video ${videoId} with model ${modelName}`,
@@ -108,6 +121,7 @@ export async function analyzeVideoVertex(
     // Generate content with actual video analysis
     const result = await generativeModel.generateContent(request)
     const response = result.response
+    const usage = normalizeUsage(response.usageMetadata)
 
     // Extract text from response
     const text =
@@ -142,7 +156,10 @@ export async function analyzeVideoVertex(
     console.log(
       `[Vertex AI] Analysis completed in ${analysisResponse.metadata.processingTime}ms`,
     )
-    return analysisResponse
+    return {
+      response: analysisResponse,
+      usage,
+    }
   } catch (error) {
     console.error('[Vertex AI] Analysis error:', error)
 
@@ -157,27 +174,33 @@ export async function analyzeVideoVertex(
       errorMessage.includes('authentication')
     ) {
       return {
-        summary: 'Authentication Error',
+        response: {
+          summary: 'Authentication Error',
+          metadata: {
+            analysisTimestamp: new Date().toISOString(),
+            model: 'error',
+            processingTime: Date.now() - startTime,
+            analysisMode: 'direct-video',
+          },
+          error:
+            'Vertex AI authentication failed. Please configure Google Cloud credentials.',
+        },
+        usage: null,
+      }
+    }
+
+    return {
+      response: {
+        summary: 'Analysis Failed',
         metadata: {
           analysisTimestamp: new Date().toISOString(),
           model: 'error',
           processingTime: Date.now() - startTime,
           analysisMode: 'direct-video',
         },
-        error:
-          'Vertex AI authentication failed. Please configure Google Cloud credentials.',
-      }
-    }
-
-    return {
-      summary: 'Analysis Failed',
-      metadata: {
-        analysisTimestamp: new Date().toISOString(),
-        model: 'error',
-        processingTime: Date.now() - startTime,
-        analysisMode: 'direct-video',
+        error: errorMessage,
       },
-      error: errorMessage,
+      usage: null,
     }
   }
 }
@@ -192,7 +215,7 @@ export async function analyzeVideoChunked(
     segmentDuration?: number // seconds
     maxWorkers?: number
   },
-): Promise<AnalyzeResponse> {
+): Promise<VertexAnalysisResult> {
   const startTime = Date.now()
 
   // Configuration
@@ -202,19 +225,18 @@ export async function analyzeVideoChunked(
   try {
     const videoDuration = await resolveVideoDurationSeconds(data.youtubeUrl)
 
-    // Check if chunking is needed
-    if (
-      !data.enableChunking ||
-      !videoDuration ||
-      videoDuration <= segmentDuration
-    ) {
-      if (data.enableChunking && !videoDuration) {
-        console.warn(
-          '[Vertex AI] Unable to determine video duration for chunked analysis. Falling back to single-pass analysis.',
-        )
-      }
+    if (!data.enableChunking) {
+      return await analyzeVideoVertex(data)
+    }
 
-      // Video is short enough, analyze as single chunk
+    if (!videoDuration || videoDuration <= 0) {
+      console.warn(
+        '[Vertex AI] Unable to determine video duration for chunked analysis. Falling back to single-pass analysis.',
+      )
+      return await analyzeVideoVertex(data)
+    }
+
+    if (videoDuration <= segmentDuration) {
       return await analyzeVideoVertex(data)
     }
 
@@ -283,6 +305,7 @@ export async function analyzeVideoChunked(
         start: segment.start,
         end: segment.end,
         analysis: text,
+        usage: normalizeUsage(result.response.usageMetadata),
       }
     })
 
@@ -298,10 +321,12 @@ export async function analyzeVideoChunked(
       )
       .join('\n\n')
 
+    const usage = mergeUsage(chunkResults.map((chunk) => chunk.usage))
+
     // Create sections from combined analysis
     const sections = parseResponseIntoSections(combinedAnalysis)
 
-    return {
+    const analysisResponse: AnalyzeResponse = {
       summary: `Analyzed ${segments.length} video segments. ${sections[0]?.content || 'Video analysis complete.'}`,
       metadata: {
         videoTitle: `Video Analysis (${videoId})`,
@@ -314,18 +339,27 @@ export async function analyzeVideoChunked(
       sections,
       rawAnalysis: combinedAnalysis,
     }
+
+    return {
+      response: analysisResponse,
+      usage,
+    }
   } catch (error) {
     console.error('[Vertex AI] Chunked analysis error:', error)
 
     return {
-      summary: 'Chunked Analysis Failed',
-      metadata: {
-        analysisTimestamp: new Date().toISOString(),
-        model: 'error',
-        processingTime: Date.now() - startTime,
-        analysisMode: 'direct-video',
+      response: {
+        summary: 'Chunked Analysis Failed',
+        metadata: {
+          analysisTimestamp: new Date().toISOString(),
+          model: 'error',
+          processingTime: Date.now() - startTime,
+          analysisMode: 'direct-video',
+        },
+        error:
+          error instanceof Error ? error.message : 'Chunked analysis failed',
       },
-      error: error instanceof Error ? error.message : 'Chunked analysis failed',
+      usage: null,
     }
   }
 }
@@ -404,7 +438,7 @@ function parseResponseIntoSections(
       : undefined
 
     // Check if this line is a section header
-    const headerMatch = line.match(/^(#{1,3}|\d+\.|\*|-)\s+(.+)/)
+    const headerMatch = line.match(/^(#{1,6})\s+(.+)/)
 
     if (headerMatch) {
       // Save the previous section if it exists
