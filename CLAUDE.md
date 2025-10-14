@@ -81,6 +81,9 @@ RAILWAY_CA_CERT_PATH=certs/railway-ca.pem
 4. **Check logs**: `railway logs`
 5. **Deployments**: Pushing to `main` triggers a Railpack build via the GitHub integration. Use `railway deployment up` only for manual hotfixes.
 6. **Build Environment**: Verify the service remains on **Railway Metal** in the Railway dashboard (Service → Settings → Build Environment).
+7. **Troubleshooting**: Use `railway status`, `railway logs`, and `railway deployment list` to debug failing deploys before re-deploying.
+8. **Railpack Config**: `railpack.json` limits the deploy image to `dist/`, `server.ts`, `node_modules/`, `certs/`, and other runtime essentials to keep pushes under Railway's image size threshold.
+9. **Prune Step**: The Railpack `prune` step removes dev dependencies by running `rm -rf node_modules` followed by `bun install --production --ignore-scripts`, so make sure production-only dependencies live in `dependencies` (not `devDependencies`).
 
 ### TLS Certificate (for local development)
 ```bash
@@ -99,7 +102,7 @@ PY
 
 ## Key Files
 
-- `src/routes/index.tsx` - Main UI with navigation and forms
+- `src/routes/index.tsx` - Main UI with navigation and forms (default `/` route)
 - `src/components/navigation.tsx` - Top navigation bar
 - `src/routes/api.analyze.ts` - Video analysis API endpoint
 - `src/lib/billing.ts` - Usage tracking and cost calculation
