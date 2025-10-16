@@ -53,26 +53,39 @@ const runningOnRailway = Boolean(
   process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID,
 )
 
-if (sslMode && sslMode.toLowerCase() === 'require') {
+const checkRailwayProxyIdentity = (host: string, cert: tls.PeerCertificate) => {
+  if (cert.subject.CN === 'localhost' && /\.proxy\.rlwy\.net$/i.test(host)) {
+    return undefined
+  }
+  return tls.checkServerIdentity(host, cert)
+}
+
+const sslModeRequired = sslMode && sslMode.toLowerCase() === 'require'
+
+if (sslModeRequired) {
   if (runningOnRailway) {
-    sslConfig = {
-      rejectUnauthorized: true,
-      ca: caCert,
+    if (caCert) {
+      sslConfig = {
+        rejectUnauthorized: true,
+        ca: caCert,
+        checkServerIdentity: connectingViaRailwayProxy
+          ? checkRailwayProxyIdentity
+          : tls.checkServerIdentity,
+      }
+    } else {
+      console.warn(
+        '[better-auth] Running on Railway without CA cert. Falling back to insecure TLS (rejectUnauthorized=false).',
+      )
+      sslConfig = {
+        rejectUnauthorized: false,
+      }
     }
   } else if (connectingViaRailwayProxy) {
     if (caCert) {
       sslConfig = {
         rejectUnauthorized: true,
         ca: caCert,
-        checkServerIdentity: (host: string, cert: tls.PeerCertificate) => {
-          if (
-            cert.subject.CN === 'localhost' &&
-            /\.proxy\.rlwy\.net$/i.test(host)
-          ) {
-            return undefined
-          }
-          return tls.checkServerIdentity(host, cert)
-        },
+        checkServerIdentity: checkRailwayProxyIdentity,
       }
     } else {
       console.warn(

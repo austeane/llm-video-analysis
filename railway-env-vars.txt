@@ -18,7 +18,10 @@ GOOGLE_API_KEY=<your-google-ai-api-key>
 
 # Server Configuration
 PORT=3000
+RAILWAY_CA_CERT_PATH=certs/railway-ca.pem
 
 # Production optimizations
 NODE_ENV=production
 STATIC_PRELOAD_MAX_BYTES=5242880
+RAILPACK_PRUNE_DEPS=true
+RAILPACK_NODE_PRUNE_CMD="rm -rf node_modules && bun install --production --ignore-scripts"

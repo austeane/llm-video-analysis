@@ -83,7 +83,8 @@ RAILWAY_CA_CERT_PATH=certs/railway-ca.pem
 6. **Build Environment**: Verify the service remains on **Railway Metal** in the Railway dashboard (Service → Settings → Build Environment).
 7. **Troubleshooting**: Use `railway status`, `railway logs`, and `railway deployment list` to debug failing deploys before re-deploying.
 8. **Railpack Config**: `railpack.json` limits the deploy image to `dist/`, `server.ts`, `node_modules/`, `certs/`, and other runtime essentials to keep pushes under Railway's image size threshold.
-9. **Prune Step**: The Railpack `prune` step removes dev dependencies by running `rm -rf node_modules` followed by `bun install --production --ignore-scripts`, so make sure production-only dependencies live in `dependencies` (not `devDependencies`).
+9. **Dependency Pruning**: Set the Railway variables `RAILPACK_PRUNE_DEPS=true` and `RAILPACK_NODE_PRUNE_CMD="rm -rf node_modules && bun install --production --ignore-scripts"` so Railpack prunes devDependencies after the build—production-only deps must live under `dependencies`.
+10. **Database TLS**: Commit `certs/railway-ca.pem` (Railway CA) and set `RAILWAY_CA_CERT_PATH=certs/railway-ca.pem` so production can verify the Postgres certificate without warnings.
 
 ### TLS Certificate (for local development)
 ```bash
@@ -121,6 +122,7 @@ PY
 
 - Railway external proxy serves cert with `CN=localhost` - handled in `src/lib/auth.ts`
 - TanStack Devtools is alpha - may need `resolve.dedupe = ['solid-js']` in vite.config.ts
+- If `RAILWAY_CA_CERT_PATH` is unset or the cert file is missing, auth will log a warning and fall back to `rejectUnauthorized=false` on Railway (sign-up still works, but TLS is not verified)
 ## MCP Tooling
 
 - Use the Playwright MCP agent located under `.playwright-mcp` for UI verification.

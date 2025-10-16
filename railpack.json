@@ -1,44 +1,6 @@
 {
   "$schema": "https://schema.railpack.com",
   "provider": "node",
-  "steps": {
-    "build": {
-      "inputs": [
-        {
-          "step": "install"
-        }
-      ],
-      "commands": [
-        "bun run build"
-      ]
-    },
-    "prune": {
-      "inputs": [
-        {
-          "step": "build"
-        }
-      ],
-      "commands": [
-        "rm -rf node_modules",
-        "bun install --production --ignore-scripts"
-      ],
-      "deployOutputs": [
-        {
-          "include": [
-            "dist",
-            "server.ts",
-            "package.json",
-            "bun.lock",
-            "node_modules",
-            "public"
-          ],
-          "exclude": [
-            "node_modules/.cache"
-          ]
-        }
-      ]
-    }
-  },
   "deploy": {
     "inputs": [
       {
@@ -52,9 +14,18 @@
         ]
       },
       {
-        "step": "prune",
+        "step": "build",
         "include": [
-          "."
+          "dist",
+          "server.ts",
+          "package.json",
+          "bun.lock",
+          "node_modules",
+          "public",
+          "certs"
+        ],
+        "exclude": [
+          "node_modules/.cache"
         ]
       }
     ]
